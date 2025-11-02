@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from collections import Counter, defaultdict
+from collections import defaultdict
 from itertools import combinations
-import random
-from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 import warnings
 
 # Import SciPy dependencies
@@ -15,17 +14,6 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
     
-# Import Numba dependencies
-try:
-    from numba import jit, prange
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-    def jit(*args, **kwargs):
-        def decorator(func): return func
-        return decorator
-    prange = range
-
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -38,12 +26,12 @@ def calculate_triplets_weighted_stable(draws_list, weights_array):
     for i, draw in enumerate(draws_list):
         weight = weights_array[i]
         for triplet in combinations(draw, 3):
-            # FIX: Ensure triplet is always sorted for hashing (tuple(sorted))
+            # Ensure triplet is always sorted for hashing
             triplets_weighted[tuple(sorted(triplet))] += weight
     return triplets_weighted
 
 def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
-    """Calculate the exact probability of matching 'match' numbers dynamically (Fix 9)."""
+    """Calculate the exact probability of matching 'match' numbers dynamically."""
     if not SCIPY_AVAILABLE:
         # Fallback value (Problem 9 fix)
         return 0.00000316 
@@ -63,7 +51,6 @@ def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
 class LotteryAnalyzer:
     def __init__(self):
         self.draws = []
-        self.all_numbers_list = []
         self.frequency_weighted = defaultdict(float)
         self.triplets_weighted = defaultdict(float)
         self.gaps = defaultdict(int)
@@ -72,8 +59,8 @@ class LotteryAnalyzer:
         self.sum_mu = 0
         self.sum_sigma = 0
 
-    def _internal_load_data(self, file_content):
-        """Load draws from TXT"""
+    def load_and_analyze(self, file_content):
+        """Main entry point for loading and analysis."""
         self.draws = []
         lines = file_content.strip().split('\n')
         for line in lines:
@@ -83,7 +70,6 @@ class LotteryAnalyzer:
             
             if len(parts) >= 12:
                 try:
-                    # Tenta sa identifice extragerile incepand cu indexul 0 sau 1 (skip ID-ul)
                     start_index = 1 if len(parts) >= 13 and parts[0].isdigit() else 0 
                     numbers = [int(parts[i]) for i in range(start_index, start_index + 12)]
                     
@@ -95,24 +81,15 @@ class LotteryAnalyzer:
         if len(self.draws) > 5000:
             self.draws = self.draws[-5000:]
             
-        self.all_numbers_list = []
-        for draw in self.draws:
-            self.all_numbers_list.extend(draw)
-
         if self.draws:
-            self._analyze_v6()
+            self._analyze_v7()
 
-    def _analyze_v6(self):
-        """v6 analysis with focus on triplets"""
-        if len(self.draws) == 0:
-            st.warning("Nu s-au incarcat extrageri valide.")
-            return
-
+    def _analyze_v7(self):
+        """v7 analysis with focus on triplets"""
         n = len(self.draws)
         if n < 10:
             st.session_state.warnings.append(f"AVERTISMENT: Doar {n} extrageri - analiza limitata.")
         
-        # Prepare weights
         weights = np.exp(np.linspace(-2, 0, n))
         weights = weights / np.sum(weights)
 
@@ -222,7 +199,6 @@ class TripletExtractor:
         """Extract triplets from variant batch"""
         triplet_scores = defaultdict(float)
         for variant in variants_batch:
-            # We must ensure the variant has at least 3 numbers for combinations to work
             if len(variant) >= 3:
                 for triplet in combinations(variant, 3):
                     triplet_tuple = tuple(sorted(triplet))
@@ -253,9 +229,9 @@ class TripletExtractor:
                     triplet_scores[triplet] += score
         return triplet_scores
 
-    # V7.0 FIX: Eliminare logica de overlap (max_overlap) - Acum returneaza Top N bazat DOAR pe scor
+    # V7.1: Fara logica de overlap
     def extract_top_triplets(self, pool_variants=None, top_n=2000):
-        """Extract top N triplets from draws or pool based purely on score (no diversity filter)."""
+        """Extract top N triplets from draws or pool based purely on score."""
         if pool_variants is None:
             triplets = self.analyzer.extract_all_triplets_from_draws()
         else:
@@ -263,7 +239,6 @@ class TripletExtractor:
             # Sort all triplets found and convert to desired format
             triplets = [(list(t), s) for t, s in sorted(triplet_scores.items(), key=lambda x: x[1], reverse=True)]
 
-        # Return only the top N triplets by score
         return triplets[:top_n]
 
 # ============================================================================
@@ -282,7 +257,6 @@ class QuadExtender:
             best_num = None
             best_score = -999999
             
-            # Select the highest scoring valid candidate 
             for num, num_score in candidates:
                 total_score = triplet_score * 0.5 + num_score
                 
@@ -293,16 +267,14 @@ class QuadExtender:
             results.append((best_num, best_score))
         return results
 
-    # V7.0 FIX: Eliminare logica de overlap. Aplica doar filtru de unicitate a quad-urilor finale.
+    # V7.1: Fara logica de overlap
     def generate_quads_from_triplets(self, triplets, num_variante=500):
         """Generate 4/4 quads from triplets based on score, enforcing only quad uniqueness."""
         quads = []
         seen_quads_sets = set() 
         
-        # Luam dublu fata de cat cerem pentru a avea sanse sa ajungem la num_variante
         target_triplets = triplets[:num_variante * 2] if len(triplets) > num_variante * 2 else triplets
         
-        # Prepare data for parallel processing
         batch_data = []
         for triplet, triplet_score in target_triplets:
             batch_data.append((triplet, triplet_score))
@@ -320,7 +292,6 @@ class QuadExtender:
             st.session_state.warnings.append(f"AVERTISMENT: Eroare ThreadPool in QuadExtender, fallback la serial: {e}")
             results = self._score_candidate_batch(batch_data) # Serial fallback
 
-        # Process results sequentially to maintain uniqueness tracking
         for i, ((triplet, _), (best_num, best_score)) in enumerate(zip(target_triplets, results)):
             if len(quads) >= num_variante:
                 break
@@ -344,7 +315,7 @@ class QuadExtender:
 # ============================================================================
 class CoverageOptimizer:
     def calculate_coverage(self, quads):
-        """Calculate coverage statistics with improved score factoring. (Fixes 4, 5)"""
+        """Calculate coverage statistics with improved score factoring."""
         
         if not quads:
             return {
@@ -355,17 +326,15 @@ class CoverageOptimizer:
 
         all_triplets = set()
         all_quads_set = set()
-        total_score = 0
         scores = []
         
         for quad, score, _ in quads:
             all_quads_set.add(tuple(quad))
             for triplet in combinations(quad, 3):
                 all_triplets.add(triplet)
-            total_score += score
             scores.append(score)
         
-        # FIX V7.0 (Problema 4, 5): Verificare pentru a evita np.mean/np.max pe liste goale (desi quads > 0, scores ar putea fi gol teoretic)
+        # FIX V7.1 (Problema 3): Verificare pentru a evita np.mean/np.max pe liste goale
         avg_score = np.mean(scores) if scores else 0.0
         max_score = np.max(scores) if scores else 0.0
         max_score_theoretical = 50 
@@ -432,16 +401,17 @@ class Backtester:
 # ============================================================================
 # UTILITIES (Direct Loading)
 # ============================================================================
-def load_and_analyze_data_direct(file_content):
+def handle_analysis_process(file_content):
+    """V7.1: Function dedicata pentru a preveni 'Can't get local object' la initializare."""
     analyzer = LotteryAnalyzer()
-    analyzer._internal_load_data(file_content)
+    analyzer.load_and_analyze(file_content)
     return analyzer
 
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-# V7.0 FIX: Foloseste doar caractere ASCII pentru a evita 'SyntaxError: invalid character'
-st.set_page_config(page_title="Lottery Quad Builder v7.0", page_icon="o", layout="wide", initial_sidebar_state="expanded")
+# V7.1 FIX: Foloseste doar caractere ASCII
+st.set_page_config(page_title="Lottery Quad Builder v7.1", page_icon="o", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -478,12 +448,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v7.0</h1>
+            <h1>Lottery Quad Builder v7.1</h1>
             <p>Triplets to 4/4 (12/66) | Fara Overlap & Stabil</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v7.0.0**")
+    st.markdown("**v7.1.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -497,51 +467,50 @@ with st.sidebar:
             if st.button("Analizeaza", type="primary"):
                 st.session_state.warnings = [] 
                 with st.spinner("Analizand..."):
-                    st.session_state.analyzer = load_and_analyze_data_direct(content)
-                st.success("Extrageri OK!")
-                st.balloons()
+                    # V7.1 FIX: Apel la functie dedicata
+                    st.session_state.analyzer = handle_analysis_process(content)
+                if st.session_state.analyzer and len(st.session_state.analyzer.draws) > 0:
+                    st.success("Extrageri OK!")
+                    st.balloons()
+                else:
+                    st.error("Fisierul nu contine extrageri valide (12/66).")
         except Exception as e:
             st.error(f"Eroare la incarcare: {e}")
 
-    if st.session_state.analyzer:
+    if st.session_state.analyzer and len(st.session_state.analyzer.draws) > 0:
         st.success("Extrageri incarcate!")
 
     st.markdown("---")
     st.header("Import Pool Variante (Optional)")
     pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
     
-    # Logica pentru a ignora ID-ul (primul element, daca exista virgula)
     if pool_file is not None:
         st.info(f"Fisier Pool: **{pool_file.name}** gata de procesare.")
         
         if st.button("Incarca Pool"):
-            st.session_state.variants_pool = [] # Clear previous variants
+            st.session_state.variants_pool = [] 
             try:
                 with st.spinner("Procesam pool-ul..."):
                     
-                    # 1. Citirea fisierului
                     if pool_file.name.endswith('.txt'):
                         content = pool_file.read().decode('utf-8')
                         df = pd.DataFrame({'Variant': content.splitlines()})
-                    else: # Assume CSV
+                    else: 
                         df = pd.read_csv(pool_file)
                         
                     variants = []
                     num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
                     variant_col = [col for col in df.columns if 'Variant' in col]
 
-                    # 2. Logica de procesare FARA RESTRICTIE & cu ID Skip
                     if variant_col:
                         for _, row in df.iterrows():
                             raw_string = str(row[variant_col[0]]).strip()
                             
-                            # Skip ID part if format is "ID, combination"
                             if ',' in raw_string:
                                 combination_string = raw_string.split(',', 1)[1].strip()
                             else:
                                 combination_string = raw_string
 
-                            # Extract numbers from the combination string (handles space, hyphen)
                             raw_nums = combination_string.replace('-', ' ').split() 
                             
                             nums = []
@@ -549,26 +518,22 @@ with st.sidebar:
                                 if x.strip().isdigit():
                                     nums.append(int(x.strip()))
                             
-                            if len(nums) >= 1: # Accepts any row with at least one integer
+                            if len(nums) >= 1: 
                                 variants.append(sorted(nums))
                     
-                    # Logica pentru CSV-uri cu coloane multiple numerice (skip ID-ul, prima coloana numerica)
                     elif len(num_cols) >= 2: 
-                        data_cols = num_cols[1:] # Skip the first column (assumed ID)
+                        data_cols = num_cols[1:] 
                         for _, row in df.iterrows():
                             try:
-                                # Preia numerele din coloanele de date
                                 nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
                                 if len(nums) >= 1: 
                                     variants.append(sorted(nums))
                             except (ValueError, TypeError): continue
                     
-                    # Logica pentru CSV-uri cu o singura coloana numerica
                     elif len(num_cols) == 1:
                          data_cols = num_cols
                          for _, row in df.iterrows():
                             try:
-                                # Preia numerele din coloanele de date
                                 nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
                                 if len(nums) >= 1: 
                                     variants.append(sorted(nums))
@@ -577,22 +542,18 @@ with st.sidebar:
                     else:
                         raise ValueError("Coloana 'Variant' sau cel putin o coloana numerica nu au fost gasite.")
 
-
-                # 3. Mesaj de feedback
                 if len(variants) > 0:
                     st.session_state.variants_pool = variants
-                    st.success(f"**{len(variants)}** variante (fara restrictie de 12/66 si ID-uri ignorate) incarcate!")
+                    st.success(f"**{len(variants)}** variante incarcate!")
                 else:
-                    st.warning(f"Fisierul a fost procesat, dar **nu s-au gasit variante valide** (niciun rand nu contine numere intregi).")
+                    st.warning(f"Fisierul a fost procesat, dar **nu s-au gasit variante valide**.")
             
             except Exception as e:
-                # 4. Mesaj de eroare
                 st.error(f"Eroare la incarcare Pool: {e}")
 
     st.markdown("---")
     st.subheader("Setari")
     
-    # Am eliminat slider-ele de Overlap
     top_n = st.slider("Top Triplete de Extras", 500, 5000, 2000)
     st.session_state.settings = {
         'top_n': top_n,
@@ -611,7 +572,7 @@ with st.sidebar:
 # ============================================================================
 # MAIN TABS
 # ============================================================================
-if not st.session_state.analyzer: st.stop()
+if not st.session_state.analyzer or len(st.session_state.analyzer.draws) == 0: st.stop()
 
 analyzer = st.session_state.analyzer
 settings = st.session_state.settings
@@ -671,7 +632,6 @@ with tab2:
                 else: st.success(f"S-au gasit {len(triplets)} triplete!")
 
         if st.session_state.top_triplets and len(st.session_state.top_triplets) > 0:
-            # FIX 6: Afiseaza top 500 in loc de top 100
             df = pd.DataFrame([
                 {'Triplet': f"{t[0][0]}-{t[0][1]}-{t[0][2]}", 'Scor': f"{t[1]:.4f}"}
                 for t in st.session_state.top_triplets[:500]
@@ -692,17 +652,18 @@ with tab3:
         if max_possible_quads < num_quads: 
              st.warning(f"Pool de triplete mic ({max_possible_quads}). Creste 'Top Triplete' in Setari.")
 
-        # V7.0 FIX (Image 1000227956.jpg): Adauga o verificare de tip in bucla de creare a dictionarului
+        # V7.1 FIX (TypeError fix): Filtrare stricta pe elemente valide (lista de 3 numere)
         valid_triplets = [(t, s) for t, s in st.session_state.top_triplets if isinstance(t, list) and len(t) == 3]
 
-        triplet_options = [f"{t[0][0]}-{t[0][1]}-{t[0][2]}" for t, _ in valid_triplets]
-        triplet_map_score = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": f"{s:.4f}" for t, s in valid_triplets}
-        triplet_map = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": (t, score) for t, score in valid_triplets}
+        triplet_options = [f"{t[0]}-{t[1]}-{t[2]}" for t, _ in valid_triplets]
+        triplet_map_score = {f"{t[0]}-{t[1]}-{t[2]}": f"{s:.4f}" for t, s in valid_triplets}
+        triplet_map = {f"{t[0]}-{t[1]}-{t[2]}": (t, score) for t, score in valid_triplets}
         
+        # Multiselect limitat la 500 (Problema 5)
         selected_triplet_strs = st.multiselect(
             "Selecteaza Triplete (Top 500 afisate, poti cauta restul)", 
             options=triplet_options, 
-            default=triplet_options[:min(500, len(triplet_options))], # Fix 6
+            default=triplet_options[:min(500, len(triplet_options))], 
             format_func=lambda x: f"{x} (Scor: {triplet_map_score.get(x, 'N/A')})"
         )
 
@@ -714,7 +675,8 @@ with tab3:
                     selected_triplets = []
                     for t_str in selected_triplet_strs:
                          t_tuple, score = triplet_map.get(t_str)
-                         selected_triplets.append((t_tuple, score))
+                         if t_tuple is not None:
+                            selected_triplets.append((t_tuple, score))
                          
                     extender = QuadExtender(analyzer)
                     quads = extender.generate_quads_from_triplets(
@@ -760,7 +722,6 @@ with tab3:
             st.markdown("---")
             st.subheader("Lista Quad-urilor")
             
-            # GENERARE PENTRU AFISARE (DETALIAT)
             df_display = pd.DataFrame([
                 {
                     'Index': i + 1,
@@ -772,19 +733,14 @@ with tab3:
             ])
             st.dataframe(df_display, use_container_width=True)
 
-            # GENERARE PENTRU EXPORT (CURAT: ID, COMBINATIE)
-            
-            # Format pentru TXT
             txt_lines_clean = []
             for i, (q, s, t) in enumerate(quads_list):
-                # ID (index + 1), Combinatie (spatiu intre numere)
                 combination_str = " ".join(map(str, q))
                 txt_lines_clean.append(f"{i+1}, {combination_str}")
                 
             txt_content_clean = "\n".join(txt_lines_clean)
             st.download_button("Descarca TXT (ID, Combinatie)", txt_content_clean, "quads_4of4_clean.txt")
 
-            # Format pentru CSV
             df_export_clean = pd.DataFrame([
                 {
                     'ID': i + 1,
@@ -793,7 +749,6 @@ with tab3:
                 for i, (q, s, t) in enumerate(quads_list)
             ])
 
-            # Export CSV fara index si cu separator virgula implicit
             csv_content_clean = df_export_clean.to_csv(index=False)
             st.download_button("Descarca CSV (ID, Combinatie)", csv_content_clean, "quads_4of4_clean.csv")
 
@@ -801,4 +756,4 @@ with tab3:
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v7.0.0 | Fara constrangeri de overlap | Joaca responsabil")
+st.caption("v7.1.0 | Fara constrangeri de overlap | Joaca responsabil")
