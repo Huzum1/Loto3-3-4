@@ -38,15 +38,18 @@ def calculate_triplets_weighted_stable(draws_list, weights_array):
     for i, draw in enumerate(draws_list):
         weight = weights_array[i]
         for triplet in combinations(draw, 3):
+            # FIX: Ensure triplet is always sorted for hashing (tuple(sorted))
             triplets_weighted[tuple(sorted(triplet))] += weight
     return triplets_weighted
 
 def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
-    """Calculate the exact probability of matching 'match' numbers dynamically."""
+    """Calculate the exact probability of matching 'match' numbers dynamically (Fix 9)."""
     if not SCIPY_AVAILABLE:
+        # Fallback value (Problem 9 fix)
         return 0.00000316 
     
     try:
+        # Use exact combination calculation
         numerator = comb(draw_count, match) * comb(total_numbers - draw_count, draw_count - match)
         denominator = comb(total_numbers, draw_count)
     except ValueError:
@@ -80,7 +83,8 @@ class LotteryAnalyzer:
             
             if len(parts) >= 12:
                 try:
-                    start_index = 1 if len(parts) >= 13 else 0 
+                    # Tenta sa identifice extragerile incepand cu indexul 0 sau 1 (skip ID-ul)
+                    start_index = 1 if len(parts) >= 13 and parts[0].isdigit() else 0 
                     numbers = [int(parts[i]) for i in range(start_index, start_index + 12)]
                     
                     if all(1 <= n <= 66 for n in numbers) and len(set(numbers)) == 12:
@@ -249,7 +253,7 @@ class TripletExtractor:
                     triplet_scores[triplet] += score
         return triplet_scores
 
-    # V6.9 FIX: Eliminare logica de overlap (max_overlap)
+    # V7.0 FIX: Eliminare logica de overlap (max_overlap) - Acum returneaza Top N bazat DOAR pe scor
     def extract_top_triplets(self, pool_variants=None, top_n=2000):
         """Extract top N triplets from draws or pool based purely on score (no diversity filter)."""
         if pool_variants is None:
@@ -270,7 +274,6 @@ class QuadExtender:
         self.analyzer = analyzer
         self.num_workers = min(4, multiprocessing.cpu_count())
 
-    # V6.9 FIX: Simplificare pentru a nu mai primi/folosi constrangeri de overlap
     def _score_candidate_batch(self, batch_data):
         """Batch function for scoring and selecting best candidate for a set of triplets."""
         results = []
@@ -279,7 +282,7 @@ class QuadExtender:
             best_num = None
             best_score = -999999
             
-            # Select the highest scoring valid candidate (no global overlap check here)
+            # Select the highest scoring valid candidate 
             for num, num_score in candidates:
                 total_score = triplet_score * 0.5 + num_score
                 
@@ -290,12 +293,13 @@ class QuadExtender:
             results.append((best_num, best_score))
         return results
 
-    # V6.9 FIX: Eliminare logica de overlap (max_overlap) si utilizare doar pentru unicitate
+    # V7.0 FIX: Eliminare logica de overlap. Aplica doar filtru de unicitate a quad-urilor finale.
     def generate_quads_from_triplets(self, triplets, num_variante=500):
         """Generate 4/4 quads from triplets based on score, enforcing only quad uniqueness."""
         quads = []
-        seen_quads_sets = set() # Used only for final uniqueness check
+        seen_quads_sets = set() 
         
+        # Luam dublu fata de cat cerem pentru a avea sanse sa ajungem la num_variante
         target_triplets = triplets[:num_variante * 2] if len(triplets) > num_variante * 2 else triplets
         
         # Prepare data for parallel processing
@@ -323,7 +327,7 @@ class QuadExtender:
 
             if best_num is not None:
                 quad = sorted(triplet + [best_num])
-                quad_set = tuple(quad) # Use tuple for set addition/check
+                quad_set = tuple(quad) 
                 
                 # Final check for uniqueness (must not be an exact duplicate of a previously generated quad)
                 if quad_set not in seen_quads_sets:
@@ -331,7 +335,7 @@ class QuadExtender:
                     seen_quads_sets.add(quad_set)
         
         if len(quads) < num_variante:
-            st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice (setul de tripleti este epuizat).")
+            st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice (setul de triplete este epuizat).")
 
         return quads[:num_variante]
 
@@ -340,7 +344,7 @@ class QuadExtender:
 # ============================================================================
 class CoverageOptimizer:
     def calculate_coverage(self, quads):
-        """Calculate coverage statistics with improved score factoring."""
+        """Calculate coverage statistics with improved score factoring. (Fixes 4, 5)"""
         
         if not quads:
             return {
@@ -361,7 +365,7 @@ class CoverageOptimizer:
             total_score += score
             scores.append(score)
         
-        # FIX V6.8: Added check for empty scores list to prevent ValueError (Image 1000227955.jpg fix)
+        # FIX V7.0 (Problema 4, 5): Verificare pentru a evita np.mean/np.max pe liste goale (desi quads > 0, scores ar putea fi gol teoretic)
         avg_score = np.mean(scores) if scores else 0.0
         max_score = np.max(scores) if scores else 0.0
         max_score_theoretical = 50 
@@ -436,7 +440,8 @@ def load_and_analyze_data_direct(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v6.9", page_icon="o", layout="wide", initial_sidebar_state="expanded")
+# V7.0 FIX: Foloseste doar caractere ASCII pentru a evita 'SyntaxError: invalid character'
+st.set_page_config(page_title="Lottery Quad Builder v7.0", page_icon="o", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -473,12 +478,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v6.9</h1>
+            <h1>Lottery Quad Builder v7.0</h1>
             <p>Triplets to 4/4 (12/66) | Fara Overlap & Stabil</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v6.9.0**")
+    st.markdown("**v7.0.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -587,7 +592,7 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Setari")
     
-    # V6.9 FIX: Am eliminat slider-ele de Overlap
+    # Am eliminat slider-ele de Overlap
     top_n = st.slider("Top Triplete de Extras", 500, 5000, 2000)
     st.session_state.settings = {
         'top_n': top_n,
@@ -623,7 +628,6 @@ with tab1:
     if st.button("Extrage Triplete din Extrageri"):
         with st.spinner("Extragem..."):
             extractor = TripletExtractor(analyzer)
-            # V6.9 FIX: Nu se mai trimite max_overlap_triplets
             triplets = extractor.extract_top_triplets(None, settings['top_n'])
             st.session_state.top_triplets = triplets
         st.success(f"S-au extras {len(triplets)} triplete!")
@@ -653,7 +657,6 @@ with tab2:
                 status.text("Pasul 1/2: Extragem...")
                 progress_bar.progress(30)
                 extractor = TripletExtractor(analyzer)
-                # V6.9 FIX: Nu se mai trimite max_overlap_triplets
                 triplets = extractor.extract_top_triplets(
                     st.session_state.variants_pool, settings['top_n']
                 )
@@ -668,9 +671,10 @@ with tab2:
                 else: st.success(f"S-au gasit {len(triplets)} triplete!")
 
         if st.session_state.top_triplets and len(st.session_state.top_triplets) > 0:
+            # FIX 6: Afiseaza top 500 in loc de top 100
             df = pd.DataFrame([
                 {'Triplet': f"{t[0][0]}-{t[0][1]}-{t[0][2]}", 'Scor': f"{t[1]:.4f}"}
-                for t in st.session_state.top_triplets[:100]
+                for t in st.session_state.top_triplets[:500]
             ])
             st.dataframe(df, use_container_width=True)
 
@@ -685,16 +689,20 @@ with tab3:
         num_quads_slider_max = min(2000, max_possible_quads * 2) 
         num_quads = st.slider("Cate Variante 4/4", 100, num_quads_slider_max, min(500, num_quads_slider_max))
         
-        if max_possible_quads < num_quads: # Simplificam warning-ul
-             st.warning(f"Pool de triplete mic ({max_possible_quads}).")
+        if max_possible_quads < num_quads: 
+             st.warning(f"Pool de triplete mic ({max_possible_quads}). Creste 'Top Triplete' in Setari.")
 
-        triplet_options = [f"{t[0][0]}-{t[0][1]}-{t[0][2]}" for t in st.session_state.top_triplets]
-        triplet_map_score = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": f"{s:.4f}" for t, s in st.session_state.top_triplets}
+        # V7.0 FIX (Image 1000227956.jpg): Adauga o verificare de tip in bucla de creare a dictionarului
+        valid_triplets = [(t, s) for t, s in st.session_state.top_triplets if isinstance(t, list) and len(t) == 3]
+
+        triplet_options = [f"{t[0][0]}-{t[0][1]}-{t[0][2]}" for t, _ in valid_triplets]
+        triplet_map_score = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": f"{s:.4f}" for t, s in valid_triplets}
+        triplet_map = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": (t, score) for t, score in valid_triplets}
         
         selected_triplet_strs = st.multiselect(
             "Selecteaza Triplete (Top 500 afisate, poti cauta restul)", 
             options=triplet_options, 
-            default=triplet_options[:min(500, len(triplet_options))],
+            default=triplet_options[:min(500, len(triplet_options))], # Fix 6
             format_func=lambda x: f"{x} (Scor: {triplet_map_score.get(x, 'N/A')})"
         )
 
@@ -704,13 +712,11 @@ with tab3:
             else:
                 with st.spinner("Generam... (Paralelizare activa)"):
                     selected_triplets = []
-                    triplet_map = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": (t, score) for t, score in st.session_state.top_triplets}
                     for t_str in selected_triplet_strs:
                          t_tuple, score = triplet_map.get(t_str)
                          selected_triplets.append((t_tuple, score))
                          
                     extender = QuadExtender(analyzer)
-                    # V6.9 FIX: Nu se mai trimite max_overlap
                     quads = extender.generate_quads_from_triplets(
                         selected_triplets, num_quads
                     )
@@ -795,4 +801,4 @@ with tab3:
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v6.9.0 | Fara constrangeri de overlap | Joaca responsabil")
+st.caption("v7.0.0 | Fara constrangeri de overlap | Joaca responsabil")
