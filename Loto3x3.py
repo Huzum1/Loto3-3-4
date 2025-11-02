@@ -33,7 +33,7 @@ def calculate_triplets_weighted_stable(draws_list, weights_array):
 def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
     """Calculate the exact probability of matching 'match' numbers dynamically."""
     if not SCIPY_AVAILABLE:
-        # Fallback value (Problem 9 fix)
+        # Fallback value 
         return 0.00000316 
     
     try:
@@ -138,14 +138,15 @@ class LotteryAnalyzer:
         if max_prob > 0: self.ml_probs_array[1:] /= max_prob
 
     def extract_all_triplets_from_draws(self, min_support=0.01):
-        """Extract top triplets from draws"""
+        """Extract top triplets from draws (Limit set to 50000 for flexibility)."""
         top_triplets = []
         min_weight_threshold = min_support * len(self.draws) 
 
         for triplet, weight in sorted(self.triplets_weighted.items(), key=lambda x: x[1], reverse=True):
             if weight >= min_weight_threshold: 
                 top_triplets.append((list(triplet), weight))
-            if len(top_triplets) >= 5000:
+            # V7.2 FIX: Limita interna marita de la 5000 la 50000
+            if len(top_triplets) >= 50000: 
                 break
         return top_triplets
     
@@ -229,7 +230,6 @@ class TripletExtractor:
                     triplet_scores[triplet] += score
         return triplet_scores
 
-    # V7.1: Fara logica de overlap
     def extract_top_triplets(self, pool_variants=None, top_n=2000):
         """Extract top N triplets from draws or pool based purely on score."""
         if pool_variants is None:
@@ -267,7 +267,6 @@ class QuadExtender:
             results.append((best_num, best_score))
         return results
 
-    # V7.1: Fara logica de overlap
     def generate_quads_from_triplets(self, triplets, num_variante=500):
         """Generate 4/4 quads from triplets based on score, enforcing only quad uniqueness."""
         quads = []
@@ -334,7 +333,7 @@ class CoverageOptimizer:
                 all_triplets.add(triplet)
             scores.append(score)
         
-        # FIX V7.1 (Problema 3): Verificare pentru a evita np.mean/np.max pe liste goale
+        # FIX V7.1: Verificare pentru a evita np.mean/np.max pe liste goale
         avg_score = np.mean(scores) if scores else 0.0
         max_score = np.max(scores) if scores else 0.0
         max_score_theoretical = 50 
@@ -410,8 +409,7 @@ def handle_analysis_process(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-# V7.1 FIX: Foloseste doar caractere ASCII
-st.set_page_config(page_title="Lottery Quad Builder v7.1", page_icon="o", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Lottery Quad Builder v7.2", page_icon="o", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -448,12 +446,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v7.1</h1>
+            <h1>Lottery Quad Builder v7.2</h1>
             <p>Triplets to 4/4 (12/66) | Fara Overlap & Stabil</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v7.1.0**")
+    st.markdown("**v7.2.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -467,7 +465,6 @@ with st.sidebar:
             if st.button("Analizeaza", type="primary"):
                 st.session_state.warnings = [] 
                 with st.spinner("Analizand..."):
-                    # V7.1 FIX: Apel la functie dedicata
                     st.session_state.analyzer = handle_analysis_process(content)
                 if st.session_state.analyzer and len(st.session_state.analyzer.draws) > 0:
                     st.success("Extrageri OK!")
@@ -554,7 +551,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Setari")
     
-    top_n = st.slider("Top Triplete de Extras", 500, 5000, 2000)
+    # V7.2 FIX: Limita maxima marita la 40000
+    top_n = st.slider("Top Triplete de Extras", 500, 40000, 5000) 
     st.session_state.settings = {
         'top_n': top_n,
     }
@@ -652,14 +650,12 @@ with tab3:
         if max_possible_quads < num_quads: 
              st.warning(f"Pool de triplete mic ({max_possible_quads}). Creste 'Top Triplete' in Setari.")
 
-        # V7.1 FIX (TypeError fix): Filtrare stricta pe elemente valide (lista de 3 numere)
         valid_triplets = [(t, s) for t, s in st.session_state.top_triplets if isinstance(t, list) and len(t) == 3]
 
         triplet_options = [f"{t[0]}-{t[1]}-{t[2]}" for t, _ in valid_triplets]
         triplet_map_score = {f"{t[0]}-{t[1]}-{t[2]}": f"{s:.4f}" for t, s in valid_triplets}
         triplet_map = {f"{t[0]}-{t[1]}-{t[2]}": (t, score) for t, score in valid_triplets}
         
-        # Multiselect limitat la 500 (Problema 5)
         selected_triplet_strs = st.multiselect(
             "Selecteaza Triplete (Top 500 afisate, poti cauta restul)", 
             options=triplet_options, 
@@ -756,4 +752,4 @@ with tab3:
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v7.1.0 | Fara constrangeri de overlap | Joaca responsabil")
+st.caption("v7.2.0 | Limite triplete ajustate | Joaca responsabil")
