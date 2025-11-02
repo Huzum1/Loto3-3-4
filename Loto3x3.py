@@ -218,11 +218,13 @@ class TripletExtractor:
         """Extract triplets from variant batch"""
         triplet_scores = defaultdict(float)
         for variant in variants_batch:
-            for triplet in combinations(variant, 3):
-                triplet_tuple = tuple(sorted(triplet))
-                base_score = self.analyzer.triplets_weighted.get(triplet_tuple, 0.0)
-                freq_score = sum(self.analyzer.frequency_weighted.get(n, 0.0) for n in triplet) / 3.0
-                triplet_scores[triplet_tuple] += base_score * 2.0 + freq_score * 0.5 
+            # We must ensure the variant has at least 3 numbers for combinations to work
+            if len(variant) >= 3:
+                for triplet in combinations(variant, 3):
+                    triplet_tuple = tuple(sorted(triplet))
+                    base_score = self.analyzer.triplets_weighted.get(triplet_tuple, 0.0)
+                    freq_score = sum(self.analyzer.frequency_weighted.get(n, 0.0) for n in triplet) / 3.0
+                    triplet_scores[triplet_tuple] += base_score * 2.0 + freq_score * 0.5 
         return triplet_scores
 
     def _extract_from_variants(self, variants):
@@ -383,8 +385,9 @@ class CoverageOptimizer:
             total_score += score
             scores.append(score)
         
-        avg_score = np.mean(scores)
-        max_score = np.max(scores)
+        # FIX V6.6: Added check for empty scores list to prevent ValueError on empty quads
+        avg_score = np.mean(scores) if scores else 0.0
+        max_score = np.max(scores) if scores else 0.0
         max_score_theoretical = 50 
 
         total_possible_triplets = 45760  
@@ -457,7 +460,7 @@ def load_and_analyze_data_direct(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v6.5", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Lottery Quad Builder v6.8", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -494,12 +497,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v6.5</h1>
+            <h1>Lottery Quad Builder v6.8</h1>
             <p>Triplets to 4/4 (12/66) | Backtest & Optimized</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v6.5.0**")
+    st.markdown("**v6.8.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -526,7 +529,7 @@ with st.sidebar:
     st.header("🗄️ Import Pool Variante (Opțional)")
     pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
     
-    # FIX V6.5: Logică robustă de încărcare cu feedback
+    # FIX V6.7: Logica pentru a ignora ID-ul (primul element, dacă există virgulă)
     if pool_file is not None:
         st.info(f"Fișier Pool: **{pool_file.name}** gata de procesare.")
         
@@ -546,28 +549,60 @@ with st.sidebar:
                     num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
                     variant_col = [col for col in df.columns if 'Variant' in col]
 
-                    # 2. Logica de procesare
+                    # 2. Logica de procesare FĂRĂ RESTRICȚIE & cu ID Skip
                     if variant_col:
                         for _, row in df.iterrows():
-                            raw_nums = str(row[variant_col[0]]).replace('-', ',').replace(' ', ',').split(',')
-                            nums = [int(x.strip()) for x in raw_nums if x.strip().isdigit()]
-                            if len(nums) == 12: variants.append(sorted(nums))
-                    elif len(num_cols) >= 12:
+                            raw_string = str(row[variant_col[0]]).strip()
+                            
+                            # Skip ID part if format is "ID, combination"
+                            if ',' in raw_string:
+                                combination_string = raw_string.split(',', 1)[1].strip()
+                            else:
+                                combination_string = raw_string
+
+                            # Extract numbers from the combination string (handles space, hyphen)
+                            raw_nums = combination_string.replace('-', ' ').split() 
+                            
+                            nums = []
+                            for x in raw_nums:
+                                if x.strip().isdigit():
+                                    nums.append(int(x.strip()))
+                            
+                            if len(nums) >= 1: # Accepts any row with at least one integer
+                                variants.append(sorted(nums))
+                    
+                    # Logica pentru CSV-uri cu coloane multiple numerice (skip ID-ul, prima coloana numerica)
+                    elif len(num_cols) >= 2: 
+                        data_cols = num_cols[1:] # Skip the first column (assumed ID)
                         for _, row in df.iterrows():
                             try:
-                                nums = [int(row[col]) for col in num_cols[:12]]
-                                if all(1 <= n <= 66 for n in nums) and len(set(nums)) == 12: variants.append(sorted(nums))
+                                # Preia numerele din coloanele de date
+                                nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
+                                if len(nums) >= 1: 
+                                    variants.append(sorted(nums))
                             except (ValueError, TypeError): continue
+                    
+                    # Logica pentru CSV-uri cu o singura coloana numerica
+                    elif len(num_cols) == 1:
+                         data_cols = num_cols
+                         for _, row in df.iterrows():
+                            try:
+                                # Preia numerele din coloanele de date
+                                nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
+                                if len(nums) >= 1: 
+                                    variants.append(sorted(nums))
+                            except (ValueError, TypeError): continue
+                    
                     else:
-                        # Dacă nu găsește coloanele necesare, aruncă excepție
-                        raise ValueError("Coloana 'Variant' sau cel puțin 12 coloane numerice nu au fost găsite.")
+                        raise ValueError("Coloana 'Variant' sau cel puțin o coloană numerică nu au fost găsite.")
+
 
                 # 3. Mesaj de feedback
                 if len(variants) > 0:
                     st.session_state.variants_pool = variants
-                    st.success(f"✅ **{len(variants)}** variante încărcate!")
+                    st.success(f"✅ **{len(variants)}** variante (fără restricție de 12/66 și ID-uri ignorate) încărcate!")
                 else:
-                    st.warning("❌ Fișierul a fost procesat, dar **nu s-au găsit variante valide** (asigurați-vă că fiecare rând conține 12 numere unice între 1-66).")
+                    st.warning(f"❌ Fișierul a fost procesat, dar **nu s-au găsit variante valide** (niciun rând nu conține numere întregi).")
             
             except Exception as e:
                 # 4. Mesaj de eroare
@@ -741,7 +776,9 @@ with tab3:
 
             st.markdown("---")
             st.subheader("Lista Quad-urilor")
-            df = pd.DataFrame([
+            
+            # GENERARE PENTRU AFISARE (DETALIAT)
+            df_display = pd.DataFrame([
                 {
                     'Index': i + 1,
                     'Quad': f"{q[0]}-{q[1]}-{q[2]}-{q[3]}",
@@ -750,19 +787,35 @@ with tab3:
                 }
                 for i, (q, s, t) in enumerate(quads_list)
             ])
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df_display, use_container_width=True)
 
-            txt_lines = []
+            # GENERARE PENTRU EXPORT (CURAT: ID, COMBINAȚIE) - FIX V6.8
+            
+            # Format pentru TXT
+            txt_lines_clean = []
             for i, (q, s, t) in enumerate(quads_list):
-                txt_lines.append(f"{i+1}, {q[0]} {q[1]} {q[2]} {q[3]} | Triplet:{t[0]}-{t[1]}-{t[2]}")
-            txt_content = "\n".join(txt_lines)
-            st.download_button("💾 Descarcă TXT (cu Triplet)", txt_content, "quads_4of4_detailed.txt")
+                # ID (index + 1), Combinație (spațiu între numere)
+                combination_str = " ".join(map(str, q))
+                txt_lines_clean.append(f"{i+1}, {combination_str}")
+                
+            txt_content_clean = "\n".join(txt_lines_clean)
+            st.download_button("💾 Descarcă TXT (ID, Combinație)", txt_content_clean, "quads_4of4_clean.txt")
 
-            csv_content = df.to_csv(index=False)
-            st.download_button("💾 Descarcă CSV (cu Triplet)", csv_content, "quads_4of4_detailed.csv")
+            # Format pentru CSV
+            df_export_clean = pd.DataFrame([
+                {
+                    'ID': i + 1,
+                    'Combinatie': " ".join(map(str, q)) 
+                }
+                for i, (q, s, t) in enumerate(quads_list)
+            ])
+
+            # Export CSV fara index si cu separator virgula implicit
+            csv_content_clean = df_export_clean.to_csv(index=False)
+            st.download_button("💾 Descarcă CSV (ID, Combinație)", csv_content_clean, "quads_4of4_clean.csv")
 
 # ============================================================================
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v6.5.0 | Stabil & Optimizat | Joacă responsabil 🍀")
+st.caption("v6.8.0 | Export curat 'ID, Combinație' | Joacă responsabil 🍀")
