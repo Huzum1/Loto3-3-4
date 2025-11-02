@@ -101,12 +101,12 @@ class LotteryAnalyzer:
     def _analyze_v6(self):
         """v6 analysis with focus on triplets"""
         if len(self.draws) == 0:
-            st.warning("Nu s-au încărcat extrageri valide.")
+            st.warning("Nu s-au incarcat extrageri valide.")
             return
 
         n = len(self.draws)
         if n < 10:
-            st.session_state.warnings.append(f"⚠️ Doar {n} extrageri - analiză limitată.")
+            st.session_state.warnings.append(f"AVERTISMENT: Doar {n} extrageri - analiza limitata.")
         
         # Prepare weights
         weights = np.exp(np.linspace(-2, 0, n))
@@ -242,38 +242,25 @@ class TripletExtractor:
                     for triplet, score in batch_scores.items():
                         triplet_scores[triplet] += score
         except Exception as e:
-            st.session_state.warnings.append(f"⚠️ Eroare ThreadPool, fallback la serial: {e}")
+            st.session_state.warnings.append(f"AVERTISMENT: Eroare ThreadPool, fallback la serial: {e}")
             for batch in batches:
                 batch_scores = self._extract_from_variants_batch(batch)
                 for triplet, score in batch_scores.items():
                     triplet_scores[triplet] += score
         return triplet_scores
 
-    def extract_top_triplets(self, pool_variants=None, top_n=2000, max_overlap=1):
-        """Extract top triplets from draws or pool with better diversity control."""
+    # V6.9 FIX: Eliminare logica de overlap (max_overlap)
+    def extract_top_triplets(self, pool_variants=None, top_n=2000):
+        """Extract top N triplets from draws or pool based purely on score (no diversity filter)."""
         if pool_variants is None:
             triplets = self.analyzer.extract_all_triplets_from_draws()
         else:
             triplet_scores = self._extract_from_variants(pool_variants)
+            # Sort all triplets found and convert to desired format
             triplets = [(list(t), s) for t, s in sorted(triplet_scores.items(), key=lambda x: x[1], reverse=True)]
 
-        if pool_variants is None and top_n > 1000:
-             max_overlap = 0
-
-        diverse_triplets = []
-        seen_numbers = set()
-        for triplet, score in triplets:
-            triplet_set = set(triplet)
-            overlap = len(triplet_set & seen_numbers)
-
-            if overlap <= max_overlap:
-                diverse_triplets.append((triplet, score))
-                seen_numbers.update(triplet_set)
-                
-            if len(diverse_triplets) >= top_n:
-                break
-                
-        return diverse_triplets
+        # Return only the top N triplets by score
+        return triplets[:top_n]
 
 # ============================================================================
 # QUAD EXTENDER
@@ -283,27 +270,17 @@ class QuadExtender:
         self.analyzer = analyzer
         self.num_workers = min(4, multiprocessing.cpu_count())
 
+    # V6.9 FIX: Simplificare pentru a nu mai primi/folosi constrangeri de overlap
     def _score_candidate_batch(self, batch_data):
         """Batch function for scoring and selecting best candidate for a set of triplets."""
         results = []
-        for triplet, triplet_score, all_used_numbers, max_overlap in batch_data:
+        for triplet, triplet_score in batch_data:
             candidates = self.analyzer.get_complementary_number(triplet)
             best_num = None
             best_score = -999999
-
-            # Only consider candidates that respect the global used numbers constraint
-            valid_candidates = [
-                (num, score) for num, score in candidates 
-                if len(set(triplet + [num]) & all_used_numbers) <= max_overlap
-            ]
             
-            # If no candidate respects max_overlap, we skip this triplet
-            if not valid_candidates:
-                results.append((None, -999999))
-                continue
-            
-            # Select the highest scoring valid candidate
-            for num, num_score in valid_candidates:
+            # Select the highest scoring valid candidate (no global overlap check here)
+            for num, num_score in candidates:
                 total_score = triplet_score * 0.5 + num_score
                 
                 if total_score > best_score:
@@ -313,17 +290,18 @@ class QuadExtender:
             results.append((best_num, best_score))
         return results
 
-    def generate_quads_from_triplets(self, triplets, num_variante=500, max_overlap=2):
-        """Generate 4/4 quads from triplets with parallel candidate scoring."""
+    # V6.9 FIX: Eliminare logica de overlap (max_overlap) si utilizare doar pentru unicitate
+    def generate_quads_from_triplets(self, triplets, num_variante=500):
+        """Generate 4/4 quads from triplets based on score, enforcing only quad uniqueness."""
         quads = []
-        all_used_numbers = set()
+        seen_quads_sets = set() # Used only for final uniqueness check
         
         target_triplets = triplets[:num_variante * 2] if len(triplets) > num_variante * 2 else triplets
         
         # Prepare data for parallel processing
         batch_data = []
         for triplet, triplet_score in target_triplets:
-            batch_data.append((triplet, triplet_score, all_used_numbers.copy(), max_overlap))
+            batch_data.append((triplet, triplet_score))
 
         results = []
         try: 
@@ -335,7 +313,7 @@ class QuadExtender:
                 for future in futures:
                     results.extend(future.result(timeout=60))
         except Exception as e:
-            st.session_state.warnings.append(f"⚠️ Eroare ThreadPool în QuadExtender, fallback la serial: {e}")
+            st.session_state.warnings.append(f"AVERTISMENT: Eroare ThreadPool in QuadExtender, fallback la serial: {e}")
             results = self._score_candidate_batch(batch_data) # Serial fallback
 
         # Process results sequentially to maintain uniqueness tracking
@@ -345,17 +323,15 @@ class QuadExtender:
 
             if best_num is not None:
                 quad = sorted(triplet + [best_num])
-                quad_set = set(quad)
+                quad_set = tuple(quad) # Use tuple for set addition/check
                 
-                # Final check for uniqueness
-                current_overlap = len(quad_set & all_used_numbers)
-                
-                if current_overlap <= max_overlap:
+                # Final check for uniqueness (must not be an exact duplicate of a previously generated quad)
+                if quad_set not in seen_quads_sets:
                     quads.append((quad, best_score, triplet))
-                    all_used_numbers.update(quad_set) # Update with the entire quad set
+                    seen_quads_sets.add(quad_set)
         
         if len(quads) < num_variante:
-            st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice din cauza constrângerilor de suprapunere și a calității tripleților.")
+            st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice (setul de tripleti este epuizat).")
 
         return quads[:num_variante]
 
@@ -385,7 +361,7 @@ class CoverageOptimizer:
             total_score += score
             scores.append(score)
         
-        # FIX V6.6: Added check for empty scores list to prevent ValueError on empty quads
+        # FIX V6.8: Added check for empty scores list to prevent ValueError (Image 1000227955.jpg fix)
         avg_score = np.mean(scores) if scores else 0.0
         max_score = np.max(scores) if scores else 0.0
         max_score_theoretical = 50 
@@ -460,7 +436,7 @@ def load_and_analyze_data_direct(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v6.8", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Lottery Quad Builder v6.9", page_icon="o", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -491,18 +467,18 @@ apply_custom_css(st.session_state.dark_mode)
 # ============================================================================
 col1, col2, col3 = st.columns([1, 2, 1])
 with col1:
-    if st.button("☀️/🌙 Toggle"):
+    if st.button("SOARE/LUNA Toggle"):
         st.session_state.dark_mode = not st.session_state.dark_mode
         st.rerun()
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v6.8</h1>
-            <p>Triplets to 4/4 (12/66) | Backtest & Optimized</p>
+            <h1>Lottery Quad Builder v6.9</h1>
+            <p>Triplets to 4/4 (12/66) | Fara Overlap & Stabil</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v6.8.0**")
+    st.markdown("**v6.9.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -513,32 +489,32 @@ with st.sidebar:
     if uploaded_file is not None:
         try:
             content = uploaded_file.read().decode('utf-8')
-            if st.button("🔍 Analizează", type="primary"):
+            if st.button("Analizeaza", type="primary"):
                 st.session_state.warnings = [] 
-                with st.spinner("⏳ Analizând..."):
+                with st.spinner("Analizand..."):
                     st.session_state.analyzer = load_and_analyze_data_direct(content)
-                st.success("✅ Extrageri OK!")
+                st.success("Extrageri OK!")
                 st.balloons()
         except Exception as e:
-            st.error(f"❌ Eroare la încărcare: {e}")
+            st.error(f"Eroare la incarcare: {e}")
 
     if st.session_state.analyzer:
-        st.success("✅ Extrageri încărcate!")
+        st.success("Extrageri incarcate!")
 
     st.markdown("---")
-    st.header("🗄️ Import Pool Variante (Opțional)")
+    st.header("Import Pool Variante (Optional)")
     pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
     
-    # FIX V6.7: Logica pentru a ignora ID-ul (primul element, dacă există virgulă)
+    # Logica pentru a ignora ID-ul (primul element, daca exista virgula)
     if pool_file is not None:
-        st.info(f"Fișier Pool: **{pool_file.name}** gata de procesare.")
+        st.info(f"Fisier Pool: **{pool_file.name}** gata de procesare.")
         
-        if st.button("💾 Încarcă Pool"):
+        if st.button("Incarca Pool"):
             st.session_state.variants_pool = [] # Clear previous variants
             try:
-                with st.spinner("⏳ Procesăm pool-ul..."):
+                with st.spinner("Procesam pool-ul..."):
                     
-                    # 1. Citirea fișierului
+                    # 1. Citirea fisierului
                     if pool_file.name.endswith('.txt'):
                         content = pool_file.read().decode('utf-8')
                         df = pd.DataFrame({'Variant': content.splitlines()})
@@ -549,7 +525,7 @@ with st.sidebar:
                     num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
                     variant_col = [col for col in df.columns if 'Variant' in col]
 
-                    # 2. Logica de procesare FĂRĂ RESTRICȚIE & cu ID Skip
+                    # 2. Logica de procesare FARA RESTRICTIE & cu ID Skip
                     if variant_col:
                         for _, row in df.iterrows():
                             raw_string = str(row[variant_col[0]]).strip()
@@ -594,40 +570,38 @@ with st.sidebar:
                             except (ValueError, TypeError): continue
                     
                     else:
-                        raise ValueError("Coloana 'Variant' sau cel puțin o coloană numerică nu au fost găsite.")
+                        raise ValueError("Coloana 'Variant' sau cel putin o coloana numerica nu au fost gasite.")
 
 
                 # 3. Mesaj de feedback
                 if len(variants) > 0:
                     st.session_state.variants_pool = variants
-                    st.success(f"✅ **{len(variants)}** variante (fără restricție de 12/66 și ID-uri ignorate) încărcate!")
+                    st.success(f"**{len(variants)}** variante (fara restrictie de 12/66 si ID-uri ignorate) incarcate!")
                 else:
-                    st.warning(f"❌ Fișierul a fost procesat, dar **nu s-au găsit variante valide** (niciun rând nu conține numere întregi).")
+                    st.warning(f"Fisierul a fost procesat, dar **nu s-au gasit variante valide** (niciun rand nu contine numere intregi).")
             
             except Exception as e:
                 # 4. Mesaj de eroare
-                st.error(f"❌ Eroare la încărcare Pool: {e}")
+                st.error(f"Eroare la incarcare Pool: {e}")
 
     st.markdown("---")
-    st.subheader("⚙️ Setări")
-    top_n = st.slider("Top Tripleți", 500, 5000, 2000)
-    max_overlap_triplets = st.slider("Max Overlap Tripleți", 0, 2, 1)
-    max_overlap_quads = st.slider("Max Overlap Quad-uri", 1, 3, 2)
+    st.subheader("Setari")
+    
+    # V6.9 FIX: Am eliminat slider-ele de Overlap
+    top_n = st.slider("Top Triplete de Extras", 500, 5000, 2000)
     st.session_state.settings = {
         'top_n': top_n,
-        'max_overlap_triplets': max_overlap_triplets,
-        'max_overlap_quads': max_overlap_quads
     }
 
     if st.session_state.warnings:
-        with st.expander("🚨 Avertismente & Note", expanded=True):
+        with st.expander("Avertismente & Note", expanded=True):
             for warn in st.session_state.warnings:
                 st.caption(warn)
     
     st.markdown("---")
     if st.session_state.analyzer:
-        st.metric("Extrageri Încărcate", len(st.session_state.analyzer.draws))
-    st.metric("Tripleți Posibili", "45,760")
+        st.metric("Extrageri Incarcate", len(st.session_state.analyzer.draws))
+    st.metric("Triplete Posibile", "45,760")
 
 # ============================================================================
 # MAIN TABS
@@ -637,21 +611,22 @@ if not st.session_state.analyzer: st.stop()
 analyzer = st.session_state.analyzer
 settings = st.session_state.settings
 
-tab1, tab2, tab3 = st.tabs(["📊 Analiză Extrageri", "🔍 Extrage din Pool", "🎯 Generează 4/4"])
+tab1, tab2, tab3 = st.tabs(["Analiza Extrageri", "Extrage din Pool", "Genereaza 4/4"])
 
 with tab1:
-    st.header("📊 Analiză Extrageri")
+    st.header("Analiza Extrageri")
     col1, col2, col3 = st.columns(3)
-    with col1: st.metric("Tripleți Ponderați", len(analyzer.triplets_weighted))
+    with col1: st.metric("Triplete Ponderate", len(analyzer.triplets_weighted))
     with col2: st.metric("Suma Medie", f"{analyzer.sum_mu:.1f}")
-    with col3: st.metric("Deviație Sumă", f"{analyzer.sum_sigma:.1f}")
+    with col3: st.metric("Deviatie Suma", f"{analyzer.sum_sigma:.1f}")
 
-    if st.button("🔍 Extrage Tripleți din Extrageri"):
-        with st.spinner("⏳ Extragem..."):
+    if st.button("Extrage Triplete din Extrageri"):
+        with st.spinner("Extragem..."):
             extractor = TripletExtractor(analyzer)
-            triplets = extractor.extract_top_triplets(None, settings['top_n'], settings['max_overlap_triplets'])
+            # V6.9 FIX: Nu se mai trimite max_overlap_triplets
+            triplets = extractor.extract_top_triplets(None, settings['top_n'])
             st.session_state.top_triplets = triplets
-        st.success(f"✅ S-au extras {len(triplets)} tripleți!")
+        st.success(f"S-au extras {len(triplets)} triplete!")
 
     if st.session_state.top_triplets:
         df = pd.DataFrame([
@@ -660,16 +635,16 @@ with tab1:
         ])
         st.dataframe(df, use_container_width=True)
         txt_content = "\n".join([f"{t[0][0]}-{t[0][1]}-{t[0][2]} {t[1]:.4f}" for t in st.session_state.top_triplets])
-        st.download_button("💾 Descarcă TXT", txt_content, "triplets_from_draws.txt")
+        st.download_button("Descarca TXT", txt_content, "triplets_from_draws.txt")
 
 with tab2:
     st.header("Extrage din Pool Variante")
     if not st.session_state.variants_pool:
-        st.warning("Importați pool-ul mai întâi (din bara laterală).")
+        st.warning("Importati pool-ul mai intai (din bara laterala).")
     else:
         st.info(f"Pool: {len(st.session_state.variants_pool)} variante")
 
-        if st.button("Găsește Tripleți Buni din Pool"):
+        if st.button("Gaseste Triplete Bune din Pool"):
             if len(st.session_state.variants_pool) == 0:
                 st.error("Pool-ul este gol!")
             else:
@@ -678,18 +653,19 @@ with tab2:
                 status.text("Pasul 1/2: Extragem...")
                 progress_bar.progress(30)
                 extractor = TripletExtractor(analyzer)
+                # V6.9 FIX: Nu se mai trimite max_overlap_triplets
                 triplets = extractor.extract_top_triplets(
-                    st.session_state.variants_pool, settings['top_n'], settings['max_overlap_triplets']
+                    st.session_state.variants_pool, settings['top_n']
                 )
                 progress_bar.progress(70)
-                status.text("Pasul 2/2: Sortare și filtrare...")
+                status.text("Pasul 2/2: Sortare si filtrare...")
                 st.session_state.top_triplets = triplets
                 progress_bar.progress(100)
                 status.empty()
                 progress_bar.empty()
 
-                if len(triplets) == 0: st.warning("Nu s-au găsit tripleți în Pool!")
-                else: st.success(f"✅ S-au găsit {len(triplets)} tripleți!")
+                if len(triplets) == 0: st.warning("Nu s-au gasit triplete in Pool!")
+                else: st.success(f"S-au gasit {len(triplets)} triplete!")
 
         if st.session_state.top_triplets and len(st.session_state.top_triplets) > 0:
             df = pd.DataFrame([
@@ -699,34 +675,34 @@ with tab2:
             st.dataframe(df, use_container_width=True)
 
 with tab3:
-    st.header("Generează 4/4")
+    st.header("Genereaza 4/4")
 
     if not st.session_state.top_triplets or len(st.session_state.top_triplets) == 0:
-        st.warning("Extrageți tripleți mai întâi (din Tab 1 sau Tab 2).")
+        st.warning("Extrageti triplete mai intai (din Tab 1 sau Tab 2).")
     else:
         max_possible_quads = len(st.session_state.top_triplets) 
         
         num_quads_slider_max = min(2000, max_possible_quads * 2) 
-        num_quads = st.slider("Câte Variante 4/4", 100, num_quads_slider_max, min(500, num_quads_slider_max))
+        num_quads = st.slider("Cate Variante 4/4", 100, num_quads_slider_max, min(500, num_quads_slider_max))
         
-        if max_possible_quads < num_quads * 2:
-             st.warning(f"Pool de tripleți mic ({max_possible_quads}). Crește 'Top Tripleți' pentru a ajunge la {num_quads} quad-uri unice.")
+        if max_possible_quads < num_quads: # Simplificam warning-ul
+             st.warning(f"Pool de triplete mic ({max_possible_quads}).")
 
         triplet_options = [f"{t[0][0]}-{t[0][1]}-{t[0][2]}" for t in st.session_state.top_triplets]
         triplet_map_score = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": f"{s:.4f}" for t, s in st.session_state.top_triplets}
         
         selected_triplet_strs = st.multiselect(
-            "Selectează Tripleți (Top 500 afișați, poți căuta restul)", 
+            "Selecteaza Triplete (Top 500 afisate, poti cauta restul)", 
             options=triplet_options, 
-            default=triplet_options[:min(10, len(triplet_options))],
+            default=triplet_options[:min(500, len(triplet_options))],
             format_func=lambda x: f"{x} (Scor: {triplet_map_score.get(x, 'N/A')})"
         )
 
-        if st.button("🚀 Generează 4/4 Unice", type="primary"):
+        if st.button("Genereaza 4/4 Unice", type="primary"):
             if not selected_triplet_strs:
-                st.warning("Selectați cel puțin un triplet.")
+                st.warning("Selectati cel putin un triplet.")
             else:
-                with st.spinner("⏳ Generăm... (Paralelizare activă)"):
+                with st.spinner("Generam... (Paralelizare activa)"):
                     selected_triplets = []
                     triplet_map = {f"{t[0][0]}-{t[0][1]}-{t[0][2]}": (t, score) for t, score in st.session_state.top_triplets}
                     for t_str in selected_triplet_strs:
@@ -734,17 +710,18 @@ with tab3:
                          selected_triplets.append((t_tuple, score))
                          
                     extender = QuadExtender(analyzer)
+                    # V6.9 FIX: Nu se mai trimite max_overlap
                     quads = extender.generate_quads_from_triplets(
-                        selected_triplets, num_quads, settings['max_overlap_quads']
+                        selected_triplets, num_quads
                     )
                     st.session_state.generated_quads = quads
-                st.success(f"✅ {len(quads)} quad-uri generate!")
+                st.success(f"{len(quads)} quad-uri generate!")
                 st.balloons()
 
         if st.session_state.generated_quads:
             quads_list = st.session_state.generated_quads
             st.markdown("---")
-            st.subheader("📊 Rezultate & Performanță")
+            st.subheader("Rezultate & Performanta")
             
             optimizer = CoverageOptimizer()
             cov = optimizer.calculate_coverage(quads_list)
@@ -752,26 +729,26 @@ with tab3:
             col1, col2, col3, col4 = st.columns(4)
             with col1: st.metric("Scor Mediu", f"{cov['avg_score']:.2f}")
             with col2: st.metric("Scor Max", f"{cov['max_score']:.2f}")
-            with col3: st.metric("Șansă Estimat (Ajustată)", f"{cov['estimated_win_chance']:.2f}%")
+            with col3: st.metric("Sansa Estimata (Ajustata)", f"{cov['estimated_win_chance']:.2f}%")
             with col4: st.metric("Quad-uri Generate", len(quads_list))
 
             st.markdown("---")
-            st.subheader("🧪 Backtest pe Extrageri Recente")
+            st.subheader("Backtest pe Extrageri Recente")
             
             if st.button("Test pe Ultimele 100 Extrageri"):
                 if len(analyzer.draws) < 100:
                     st.warning(f"Doar {len(analyzer.draws)} extrageri disponibile. Nu se poate rula backtest-ul.")
                 else:
-                    with st.spinner("⏳ Rulare backtest..."):
+                    with st.spinner("Rulare backtest..."):
                         backtester = Backtester(analyzer)
                         avg_2, avg_3, avg_4, expected_val = backtester.run_backtest(quads_list, num_draws=100)
                     
-                    st.success("✅ Backtest Finalizat!")
+                    st.success("Backtest Finalizat!")
                     b_col1, b_col2, b_col3, b_col4 = st.columns(4)
                     with b_col1: st.metric("Avg Hits 2/4", f"{avg_2:.2f}")
                     with b_col2: st.metric("Avg Hits 3/4", f"{avg_3:.2f}")
                     with b_col3: st.metric("Avg Hits 4/4", f"{avg_4:.2f}")
-                    with b_col4: st.metric("Valoare Așteptată", f"{expected_val:.2f}")
+                    with b_col4: st.metric("Valoare Asteptata", f"{expected_val:.2f}")
 
 
             st.markdown("---")
@@ -783,23 +760,23 @@ with tab3:
                     'Index': i + 1,
                     'Quad': f"{q[0]}-{q[1]}-{q[2]}-{q[3]}",
                     'Scor': f"{s:.2f}",
-                    'Triplet_Bază': f"{t[0]}-{t[1]}-{t[2]}"
+                    'Triplet_Baza': f"{t[0]}-{t[1]}-{t[2]}"
                 }
                 for i, (q, s, t) in enumerate(quads_list)
             ])
             st.dataframe(df_display, use_container_width=True)
 
-            # GENERARE PENTRU EXPORT (CURAT: ID, COMBINAȚIE) - FIX V6.8
+            # GENERARE PENTRU EXPORT (CURAT: ID, COMBINATIE)
             
             # Format pentru TXT
             txt_lines_clean = []
             for i, (q, s, t) in enumerate(quads_list):
-                # ID (index + 1), Combinație (spațiu între numere)
+                # ID (index + 1), Combinatie (spatiu intre numere)
                 combination_str = " ".join(map(str, q))
                 txt_lines_clean.append(f"{i+1}, {combination_str}")
                 
             txt_content_clean = "\n".join(txt_lines_clean)
-            st.download_button("💾 Descarcă TXT (ID, Combinație)", txt_content_clean, "quads_4of4_clean.txt")
+            st.download_button("Descarca TXT (ID, Combinatie)", txt_content_clean, "quads_4of4_clean.txt")
 
             # Format pentru CSV
             df_export_clean = pd.DataFrame([
@@ -812,10 +789,10 @@ with tab3:
 
             # Export CSV fara index si cu separator virgula implicit
             csv_content_clean = df_export_clean.to_csv(index=False)
-            st.download_button("💾 Descarcă CSV (ID, Combinație)", csv_content_clean, "quads_4of4_clean.csv")
+            st.download_button("Descarca CSV (ID, Combinatie)", csv_content_clean, "quads_4of4_clean.csv")
 
 # ============================================================================
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v6.8.0 | Export curat 'ID, Combinație' | Joacă responsabil 🍀")
+st.caption("v6.9.0 | Fara constrangeri de overlap | Joaca responsabil")
