@@ -8,14 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 import warnings
 
-# Import SciPy dependencies (assuming installation via requirements.txt)
+# Import SciPy dependencies
 try:
     from scipy.special import comb
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
     
-# Import Numba dependencies (optional)
+# Import Numba dependencies
 try:
     from numba import jit, prange
     NUMBA_AVAILABLE = True
@@ -38,7 +38,6 @@ def calculate_triplets_weighted_stable(draws_list, weights_array):
     for i, draw in enumerate(draws_list):
         weight = weights_array[i]
         for triplet in combinations(draw, 3):
-            # Ensure triplet is sorted for consistent hashing
             triplets_weighted[tuple(sorted(triplet))] += weight
     return triplets_weighted
 
@@ -48,7 +47,6 @@ def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
         return 0.00000316 
     
     try:
-        # C(draw_count, match) * C(total_numbers - draw_count, draw_count - match) / C(total_numbers, draw_count)
         numerator = comb(draw_count, match) * comb(total_numbers - draw_count, draw_count - match)
         denominator = comb(total_numbers, draw_count)
     except ValueError:
@@ -451,8 +449,6 @@ class Backtester:
 # ============================================================================
 # UTILITIES (Direct Loading)
 # ============================================================================
-
-# Eliminam decoratorul @st.cache_data pentru a evita problema de serializare.
 def load_and_analyze_data_direct(file_content):
     analyzer = LotteryAnalyzer()
     analyzer._internal_load_data(file_content)
@@ -461,7 +457,7 @@ def load_and_analyze_data_direct(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v6.4", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Lottery Quad Builder v6.5", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
     if dark_mode:
@@ -498,12 +494,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v6.4</h1>
+            <h1>Lottery Quad Builder v6.5</h1>
             <p>Triplets to 4/4 (12/66) | Backtest & Optimized</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v6.4.0**")
+    st.markdown("**v6.5.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -524,46 +520,57 @@ with st.sidebar:
             st.error(f"❌ Eroare la încărcare: {e}")
 
     if st.session_state.analyzer:
-        st.success("✅ Încărcat!")
+        st.success("✅ Extrageri încărcate!")
 
     st.markdown("---")
     st.header("🗄️ Import Pool Variante (Opțional)")
-    # Added 'txt' to allowed types
     pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
     
-    # FIX V6.4: Mutăm citirea fișierului ÎN INTERIORUL butonului
+    # FIX V6.5: Logică robustă de încărcare cu feedback
     if pool_file is not None:
+        st.info(f"Fișier Pool: **{pool_file.name}** gata de procesare.")
+        
         if st.button("💾 Încarcă Pool"):
+            st.session_state.variants_pool = [] # Clear previous variants
             try:
-                # 1. Citirea și crearea DF se face ACUM (la click)
-                if pool_file.name.endswith('.txt'):
-                    content = pool_file.read().decode('utf-8')
-                    df = pd.DataFrame({'Variant': content.splitlines()})
-                else: # Assume CSV
-                    df = pd.read_csv(pool_file)
+                with st.spinner("⏳ Procesăm pool-ul..."):
                     
-                variants = []
-                num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
-                variant_col = [col for col in df.columns if 'Variant' in col]
+                    # 1. Citirea fișierului
+                    if pool_file.name.endswith('.txt'):
+                        content = pool_file.read().decode('utf-8')
+                        df = pd.DataFrame({'Variant': content.splitlines()})
+                    else: # Assume CSV
+                        df = pd.read_csv(pool_file)
+                        
+                    variants = []
+                    num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
+                    variant_col = [col for col in df.columns if 'Variant' in col]
 
-                if variant_col:
-                    for _, row in df.iterrows():
-                        raw_nums = str(row[variant_col[0]]).replace('-', ',').replace(' ', ',').split(',')
-                        nums = [int(x.strip()) for x in raw_nums if x.strip().isdigit()]
-                        if len(nums) == 12: variants.append(sorted(nums))
-                elif len(num_cols) >= 12:
-                    for _, row in df.iterrows():
-                        try:
-                            nums = [int(row[col]) for col in num_cols[:12]]
-                            if all(1 <= n <= 66 for n in nums) and len(set(nums)) == 12: variants.append(sorted(nums))
-                        except (ValueError, TypeError): continue
-                else:
-                    st.error("Coloana 'Variant' sau cel puțin 12 coloane numerice nu au fost găsite.")
+                    # 2. Logica de procesare
+                    if variant_col:
+                        for _, row in df.iterrows():
+                            raw_nums = str(row[variant_col[0]]).replace('-', ',').replace(' ', ',').split(',')
+                            nums = [int(x.strip()) for x in raw_nums if x.strip().isdigit()]
+                            if len(nums) == 12: variants.append(sorted(nums))
+                    elif len(num_cols) >= 12:
+                        for _, row in df.iterrows():
+                            try:
+                                nums = [int(row[col]) for col in num_cols[:12]]
+                                if all(1 <= n <= 66 for n in nums) and len(set(nums)) == 12: variants.append(sorted(nums))
+                            except (ValueError, TypeError): continue
+                    else:
+                        # Dacă nu găsește coloanele necesare, aruncă excepție
+                        raise ValueError("Coloana 'Variant' sau cel puțin 12 coloane numerice nu au fost găsite.")
 
+                # 3. Mesaj de feedback
                 if len(variants) > 0:
                     st.session_state.variants_pool = variants
-                    st.success(f"✅ {len(variants)} variante încărcate!")
+                    st.success(f"✅ **{len(variants)}** variante încărcate!")
+                else:
+                    st.warning("❌ Fișierul a fost procesat, dar **nu s-au găsit variante valide** (asigurați-vă că fiecare rând conține 12 numere unice între 1-66).")
+            
             except Exception as e:
+                # 4. Mesaj de eroare
                 st.error(f"❌ Eroare la încărcare Pool: {e}")
 
     st.markdown("---")
@@ -758,4 +765,4 @@ with tab3:
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v6.4.0 | Stabil & Optimizat | Joacă responsabil 🍀")
+st.caption("v6.5.0 | Stabil & Optimizat | Joacă responsabil 🍀")
