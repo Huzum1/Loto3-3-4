@@ -1,3 +1,7 @@
+Absolut. Iată codul complet și stabilizat v6.4 al aplicației Streamlit, care include remediile pentru toate problemele anterioare, inclusiv eroarea de serializare Streamlit și funcționalitatea corectă a butonului "💾 Încarcă Pool".
+Această versiune asigură că fișierul Pool este citit doar în momentul apăsării butonului, rezolvând eroarea de flux de execuție.
+💻 Codul Final Streamlit (v6.4)
+Salvați acest cod într-un fișier numit app.py.
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -38,17 +42,13 @@ def calculate_triplets_weighted_stable(draws_list, weights_array):
     for i, draw in enumerate(draws_list):
         weight = weights_array[i]
         for triplet in combinations(draw, 3):
-            # Ensure triplet is sorted for consistent hashing (Problem 2 check)
+            # Ensure triplet is sorted for consistent hashing
             triplets_weighted[tuple(sorted(triplet))] += weight
     return triplets_weighted
 
 def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
-    """
-    Calculate the exact probability of matching 'match' numbers dynamically.
-    (Fixes Problem 8)
-    """
+    """Calculate the exact probability of matching 'match' numbers dynamically."""
     if not SCIPY_AVAILABLE:
-        # Hardcoded fallback is now ONLY for when scipy is missing
         return 0.00000316 
     
     try:
@@ -64,8 +64,6 @@ def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
 # LOTTERY ANALYZER
 # ============================================================================
 class LotteryAnalyzer:
-    # ... (restul clasei ramane similar, doar ca _internal_load_data este chemata direct) ...
-
     def __init__(self):
         self.draws = []
         self.all_numbers_list = []
@@ -78,7 +76,7 @@ class LotteryAnalyzer:
         self.sum_sigma = 0
 
     def _internal_load_data(self, file_content):
-        # ... (Loading logic remains the same - reads TXT lines) ...
+        """Load draws from TXT"""
         self.draws = []
         lines = file_content.strip().split('\n')
         for line in lines:
@@ -107,7 +105,7 @@ class LotteryAnalyzer:
             self._analyze_v6()
 
     def _analyze_v6(self):
-        # ... (Analysis logic remains the same) ...
+        """v6 analysis with focus on triplets"""
         if len(self.draws) == 0:
             st.warning("Nu s-au încărcat extrageri valide.")
             return
@@ -116,14 +114,17 @@ class LotteryAnalyzer:
         if n < 10:
             st.session_state.warnings.append(f"⚠️ Doar {n} extrageri - analiză limitată.")
         
+        # Prepare weights
         weights = np.exp(np.linspace(-2, 0, n))
         weights = weights / np.sum(weights)
 
+        # Weighted frequency 
         self.frequency_weighted = defaultdict(float)
         for i, draw in enumerate(self.draws):
             for num in draw:
                 self.frequency_weighted[num] += weights[i]
         
+        # Weighted triplets 
         recent_draws = self.draws[-2000:] if len(self.draws) > 2000 else self.draws
         recent_n = len(recent_draws)
         recent_weights = np.exp(np.linspace(-2, 0, recent_n))
@@ -131,6 +132,7 @@ class LotteryAnalyzer:
 
         self.triplets_weighted = calculate_triplets_weighted_stable(recent_draws, recent_weights)
         
+        # Gaps, Markov, Sums, ML Probs
         for num in range(1, 67):
             for i in range(len(self.draws) - 1, -1, -1):
                 if num in self.draws[i]:
@@ -139,6 +141,7 @@ class LotteryAnalyzer:
             if num not in self.gaps: self.gaps[num] = len(self.draws)
             self.ml_probs_array[num] = self.frequency_weighted.get(num, 0.0)
             
+        # Markov
         markov_counts = defaultdict(lambda: defaultdict(float))
         for i in range(len(self.draws) - 1):
             weight = weights[i]
@@ -151,6 +154,7 @@ class LotteryAnalyzer:
                 for num2 in markov_counts[num1]:
                     self.markov_probabilities[num1][num2] = markov_counts[num1][num2] / total
                     
+        # Sums
         sums = [sum(draw) for draw in self.draws]
         self.sum_mu = np.mean(sums)
         self.sum_sigma = np.std(sums)
@@ -159,7 +163,7 @@ class LotteryAnalyzer:
         if max_prob > 0: self.ml_probs_array[1:] /= max_prob
 
     def extract_all_triplets_from_draws(self, min_support=0.01):
-        # ... (Extraction logic remains the same) ...
+        """Extract top triplets from draws"""
         top_triplets = []
         min_weight_threshold = min_support * len(self.draws) 
 
@@ -171,34 +175,39 @@ class LotteryAnalyzer:
         return top_triplets
     
     def get_candidate_score(self, triplet, num):
-        # ... (Scoring logic remains the same) ...
+        """Calculates a normalized score for a single candidate number."""
         triplet_set = set(triplet)
         if num in triplet_set:
             return -999999
             
+        # Normalization factors
         max_markov = 1.0 
         max_ml = 1.0
         max_freq = max(self.frequency_weighted.values()) if self.frequency_weighted else 1.0
         max_gap = max(self.gaps.values()) if self.gaps else 1.0
         
+        # Normalized Markov score
         last_num = triplet[-1]
         markov_score = self.markov_probabilities[last_num].get(num, 0.0) / max(max_markov, 0.01) * 10
         
+        # ML probability score (Weighted Frequency)
         ml_score = self.ml_probs_array[num] / max(max_ml, 0.01) * 15
         
+        # Gap score (Penalty: closer to 0 is better)
         gap_score = self.gaps.get(num, len(self.draws)) / max(max_gap, 0.01)
         gap_penalty = gap_score * -5 
         
+        # Frequency score (Weighted Frequency)
         freq_score = self.frequency_weighted.get(num, 0.0) / max(max_freq, 0.01) * 5
         
         return markov_score + ml_score + gap_penalty + freq_score
 
     def get_complementary_number(self, triplet):
-        # ... (Candidate logic remains the same) ...
+        """Get top 5 candidate numbers to complete quad."""
         candidates = []
         for num in range(1, 67):
             score = self.get_candidate_score(triplet, num)
-            if score > -999999:
+            if score > -999999: 
                 candidates.append((num, score))
                 
         candidates.sort(key=lambda x: x[1], reverse=True)
@@ -208,11 +217,11 @@ class LotteryAnalyzer:
 # TRIPLET EXTRACTOR
 # ============================================================================
 class TripletExtractor:
-    # ... (Logic remains the same) ...
     def __init__(self, analyzer):
         self.analyzer = analyzer
 
     def _extract_from_variants_batch(self, variants_batch):
+        """Extract triplets from variant batch"""
         triplet_scores = defaultdict(float)
         for variant in variants_batch:
             for triplet in combinations(variant, 3):
@@ -223,6 +232,7 @@ class TripletExtractor:
         return triplet_scores
 
     def _extract_from_variants(self, variants):
+        """Extract triplets from variant list with parallel processing"""
         if not variants: return {}
         num_workers = min(4, multiprocessing.cpu_count())
         batch_size = max(1000, len(variants) // num_workers)
@@ -244,6 +254,7 @@ class TripletExtractor:
         return triplet_scores
 
     def extract_top_triplets(self, pool_variants=None, top_n=2000, max_overlap=1):
+        """Extract top triplets from draws or pool with better diversity control."""
         if pool_variants is None:
             triplets = self.analyzer.extract_all_triplets_from_draws()
         else:
@@ -251,7 +262,7 @@ class TripletExtractor:
             triplets = [(list(t), s) for t, s in sorted(triplet_scores.items(), key=lambda x: x[1], reverse=True)]
 
         if pool_variants is None and top_n > 1000:
-             max_overlap = 0 
+             max_overlap = 0
 
         diverse_triplets = []
         seen_numbers = set()
@@ -277,19 +288,20 @@ class QuadExtender:
         self.num_workers = min(4, multiprocessing.cpu_count())
 
     def _score_candidate_batch(self, batch_data):
+        """Batch function for scoring and selecting best candidate for a set of triplets."""
         results = []
         for triplet, triplet_score, all_used_numbers, max_overlap in batch_data:
             candidates = self.analyzer.get_complementary_number(triplet)
             best_num = None
             best_score = -999999
 
-            # Problem 4/7: Only consider candidates that respect the global used numbers constraint
+            # Only consider candidates that respect the global used numbers constraint
             valid_candidates = [
                 (num, score) for num, score in candidates 
                 if len(set(triplet + [num]) & all_used_numbers) <= max_overlap
             ]
             
-            # If no candidate respects max_overlap, we skip this triplet (best_num remains None)
+            # If no candidate respects max_overlap, we skip this triplet
             if not valid_candidates:
                 results.append((None, -999999))
                 continue
@@ -306,19 +318,19 @@ class QuadExtender:
         return results
 
     def generate_quads_from_triplets(self, triplets, num_variante=500, max_overlap=2):
+        """Generate 4/4 quads from triplets with parallel candidate scoring."""
         quads = []
         all_used_numbers = set()
         
         target_triplets = triplets[:num_variante * 2] if len(triplets) > num_variante * 2 else triplets
         
+        # Prepare data for parallel processing
         batch_data = []
         for triplet, triplet_score in target_triplets:
-            # We copy all_used_numbers *before* parallelizing, 
-            # and rely on the sequential loop below for final update and selection
             batch_data.append((triplet, triplet_score, all_used_numbers.copy(), max_overlap))
 
         results = []
-        try:
+        try: 
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                 chunk_size = max(50, len(batch_data) // self.num_workers)
                 chunks = [batch_data[i:i + chunk_size] for i in range(0, len(batch_data), chunk_size)]
@@ -328,11 +340,9 @@ class QuadExtender:
                     results.extend(future.result(timeout=60))
         except Exception as e:
             st.session_state.warnings.append(f"⚠️ Eroare ThreadPool în QuadExtender, fallback la serial: {e}")
-            results = self._score_candidate_batch(batch_data)
+            results = self._score_candidate_batch(batch_data) # Serial fallback
 
-        # Process results sequentially to maintain uniqueness tracking (Problem 4 fix)
-        # We must re-check overlap against the currently growing all_used_numbers set
-        # This loop also correctly updates the set per quad
+        # Process results sequentially to maintain uniqueness tracking
         for i, ((triplet, _), (best_num, best_score)) in enumerate(zip(target_triplets, results)):
             if len(quads) >= num_variante:
                 break
@@ -346,7 +356,7 @@ class QuadExtender:
                 
                 if current_overlap <= max_overlap:
                     quads.append((quad, best_score, triplet))
-                    all_used_numbers.update(quad_set) # Problem 4: Update with the entire quad set
+                    all_used_numbers.update(quad_set) # Update with the entire quad set
         
         if len(quads) < num_variante:
             st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice din cauza constrângerilor de suprapunere și a calității tripleților.")
@@ -360,7 +370,7 @@ class CoverageOptimizer:
     def calculate_coverage(self, quads):
         """Calculate coverage statistics with improved score factoring."""
         
-        if not quads: # Fixes Problem 3: Empty list check
+        if not quads:
             return {
                 'covered_triplets': 0, 'triplet_coverage_percent': 0.0,
                 'covered_quads': 0, 'quad_coverage_percent': 0.0,
@@ -379,8 +389,8 @@ class CoverageOptimizer:
             total_score += score
             scores.append(score)
         
-        avg_score = total_score / len(quads)
-        max_score = max(scores) # Fixes Problem 3: Max score on non-empty list
+        avg_score = np.mean(scores)
+        max_score = np.max(scores)
         max_score_theoretical = 50 
 
         total_possible_triplets = 45760  
@@ -389,7 +399,7 @@ class CoverageOptimizer:
         triplet_coverage = len(all_triplets) / total_possible_triplets * 100
         quad_coverage = len(all_quads_set) / total_possible_quads * 100
 
-        single_quad_prob = calculate_lottery_probability(match=4) # Uses dynamic calculation (Fixes Problem 8)
+        single_quad_prob = calculate_lottery_probability(match=4) 
         num_quads = len(quads)
         win_chance = (1 - (1 - single_quad_prob) ** num_quads) * 100
 
@@ -443,7 +453,7 @@ class Backtester:
         return avg_hits_2, avg_hits_3, avg_hits_4, expected_hits
 
 # ============================================================================
-# CACHING REMOVAL (Fixes the 'local object' Streamlit Error)
+# UTILITIES (Direct Loading)
 # ============================================================================
 
 # Eliminam decoratorul @st.cache_data pentru a evita problema de serializare.
@@ -455,10 +465,9 @@ def load_and_analyze_data_direct(file_content):
 # ============================================================================
 # PAGE CONFIG & CSS
 # ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v6.3", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Lottery Quad Builder v6.4", page_icon="🎲", layout="wide", initial_sidebar_state="expanded")
 
 def apply_custom_css(dark_mode=False):
-    # Ensure UTF-8 characters are handled in markdown (Problem 1)
     if dark_mode:
         bg_color, text_color, card_bg = "#0E1117", "#FAFAFA", "#262730"
     else:
@@ -471,7 +480,7 @@ def apply_custom_css(dark_mode=False):
     """, unsafe_allow_html=True)
 
 # ============================================================================
-# SESSION STATE
+# SESSION STATE 
 # ============================================================================
 if 'analyzer' not in st.session_state: st.session_state.analyzer = None
 if 'variants_pool' not in st.session_state: st.session_state.variants_pool = []
@@ -493,12 +502,12 @@ with col1:
 with col2:
     st.markdown("""
         <div class="main-header">
-            <h1>Lottery Quad Builder v6.3</h1>
+            <h1>Lottery Quad Builder v6.4</h1>
             <p>Triplets to 4/4 (12/66) | Backtest & Optimized</p>
         </div>
     """, unsafe_allow_html=True)
 with col3:
-    st.markdown("**v6.3.0**")
+    st.markdown("**v6.4.0**")
 
 # ============================================================================
 # SIDEBAR
@@ -512,8 +521,7 @@ with st.sidebar:
             if st.button("🔍 Analizează", type="primary"):
                 st.session_state.warnings = [] 
                 with st.spinner("⏳ Analizând..."):
-                    # Use direct loading function (Fixes the initial error)
-                    st.session_state.analyzer = load_and_analyze_data_direct(content) 
+                    st.session_state.analyzer = load_and_analyze_data_direct(content)
                 st.success("✅ Extrageri OK!")
                 st.balloons()
         except Exception as e:
@@ -524,29 +532,30 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("🗄️ Import Pool Variante (Opțional)")
-    # Added 'txt' to allowed types (User Request)
+    # Added 'txt' to allowed types
     pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
+    
+    # FIX V6.4: Mutăm citirea fișierului ÎN INTERIORUL butonului
     if pool_file is not None:
-        try:
-            # Handle both CSV and TXT (TXT files will be read as raw strings first)
-            if pool_file.name.endswith('.txt'):
-                df = pd.DataFrame({'Variant': pool_file.read().decode('utf-8').splitlines()})
-            else: # Assume CSV
-                df = pd.read_csv(pool_file)
-                
-            if st.button("💾 Încarcă Pool"):
+        if st.button("💾 Încarcă Pool"):
+            try:
+                # 1. Citirea și crearea DF se face ACUM (la click)
+                if pool_file.name.endswith('.txt'):
+                    content = pool_file.read().decode('utf-8')
+                    df = pd.DataFrame({'Variant': content.splitlines()})
+                else: # Assume CSV
+                    df = pd.read_csv(pool_file)
+                    
                 variants = []
                 num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
                 variant_col = [col for col in df.columns if 'Variant' in col]
 
                 if variant_col:
-                    # Case 1: Single variant column (string or list of strings)
                     for _, row in df.iterrows():
                         raw_nums = str(row[variant_col[0]]).replace('-', ',').replace(' ', ',').split(',')
                         nums = [int(x.strip()) for x in raw_nums if x.strip().isdigit()]
                         if len(nums) == 12: variants.append(sorted(nums))
                 elif len(num_cols) >= 12:
-                    # Case 2: Multiple number columns (Num1, Num2, ...)
                     for _, row in df.iterrows():
                         try:
                             nums = [int(row[col]) for col in num_cols[:12]]
@@ -558,8 +567,8 @@ with st.sidebar:
                 if len(variants) > 0:
                     st.session_state.variants_pool = variants
                     st.success(f"✅ {len(variants)} variante încărcate!")
-        except Exception as e:
-            st.error(f"❌ Eroare la încărcare Pool: {e}")
+            except Exception as e:
+                st.error(f"❌ Eroare la încărcare Pool: {e}")
 
     st.markdown("---")
     st.subheader("⚙️ Setări")
@@ -592,7 +601,6 @@ settings = st.session_state.settings
 
 tab1, tab2, tab3 = st.tabs(["📊 Analiză Extrageri", "🔍 Extrage din Pool", "🎯 Generează 4/4"])
 
-# ... (restul taburilor rămâne similar) ...
 with tab1:
     st.header("📊 Analiză Extrageri")
     col1, col2, col3 = st.columns(3)
@@ -727,6 +735,7 @@ with tab3:
                     with b_col3: st.metric("Avg Hits 4/4", f"{avg_4:.2f}")
                     with b_col4: st.metric("Valoare Așteptată", f"{expected_val:.2f}")
 
+
             st.markdown("---")
             st.subheader("Lista Quad-urilor")
             df = pd.DataFrame([
@@ -753,4 +762,5 @@ with tab3:
 # FOOTER
 # ============================================================================
 st.markdown("---")
-st.caption("v6.3.0 | Stabil & Optimizat | Joacă responsabil 🍀")
+st.caption("v6.4.0 | Stabil & Optimizat | Joacă responsabil 🍀")
+
