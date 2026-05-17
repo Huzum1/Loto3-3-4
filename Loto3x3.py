@@ -1330,19 +1330,29 @@ else:
                 if not aplica_filtre_premium(combinatii_test, filtre_active, int(max_freq), int(max_perechi_val), int(max_comune_val)):
                     continue
 
-            # Testează pe chenare
+            # Testează pe TOATE chenarele întâi
             wr_list = []
             hits_list = []
-            valid = True
 
             for chenar in chenare_cu_runde:
                 wr33, _, _ = calculeaza_wr_chenar(combinatii_test, chenar, 3)
                 _, _, hits23 = calculeaza_wr_chenar(combinatii_test, chenar, 2)
-
                 wr_list.append(wr33)
                 hits_list.append(hits23)
 
-                # Verifică criteriile per chenar
+            # Calculează scorul pe TOATE chenarele
+            sc = scor_stabilitate(wr_list)
+
+            # Tracking best indiferent de criterii
+            if sc > best_score:
+                best_score = sc
+                best_combo = combinatii_test
+                best_wr_list = wr_list
+                best_hits_list = hits_list
+
+            # Verifică criteriile pe TOATE chenarele
+            valid = True
+            for wr33, hits23 in zip(wr_list, hits_list):
                 if not (wr_min <= wr33 <= wr_max):
                     valid = False
                     break
@@ -1351,14 +1361,6 @@ else:
                     break
 
             if not valid:
-                # Calculează scorul oricum pentru best tracking
-                if wr_list:
-                    sc = scor_stabilitate(wr_list)
-                    if sc > best_score:
-                        best_score = sc
-                        best_combo = combinatii_test
-                        best_wr_list = wr_list
-                        best_hits_list = hits_list
                 continue
 
             # Verifică deviația între chenare
@@ -1367,12 +1369,6 @@ else:
                 mean_wr = sum(wr_list) / len(wr_list)
                 std_wr = math.sqrt(sum((x - mean_wr)**2 for x in wr_list) / len(wr_list))
                 if std_wr > dev_max:
-                    sc = scor_stabilitate(wr_list)
-                    if sc > best_score:
-                        best_score = sc
-                        best_combo = combinatii_test
-                        best_wr_list = wr_list
-                        best_hits_list = hits_list
                     continue
 
             # A trecut toate criteriile!
