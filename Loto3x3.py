@@ -1,755 +1,1245 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-from collections import defaultdict
-from itertools import combinations
-import multiprocessing
-from concurrent.futures import ThreadPoolExecutor
-import warnings
+import random
+import json
+from datetime import datetime
+from collections import Counter
 
-# Import SciPy dependencies
-try:
-    from scipy.special import comb
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
+# Configurare pagină
+st.set_page_config(
+    page_title="GENERATOR DE BANI ♣️ - GeKKo 🐲",
+    page_icon="🐲",
+    layout="wide"
+)
+
+# Inițializare session state
+if 'runde_salvate' not in st.session_state:
+    st.session_state.runde_salvate = []
+if 'combinatii_generate' not in st.session_state:
+    st.session_state.combinatii_generate = []
+if 'strategii_selectate' not in st.session_state:
+    st.session_state.strategii_selectate = []
+
+# ============================
+# STRATEGII DE GENERARE - OPTIMIZATE PENTRU 4/4
+# ============================
+
+def strategie_random_standard(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 0: Random standard (original)"""
+    return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+
+def strategie_echilibru_perfect(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 1: Distribuție echilibrată pe zone
+    Pentru 4 numere: 1-1-2 sau 2-1-1 distribuit pe 3 zone"""
+    interval = numar_max - numar_min + 1
+    zone_size = interval // 3
     
-warnings.filterwarnings('ignore')
-
-# ============================================================================
-# HELPER FUNCTIONS 
-# ============================================================================
-
-def calculate_triplets_weighted_stable(draws_list, weights_array):
-    """Stable triplet calculation using Python dicts and weights."""
-    triplets_weighted = defaultdict(float)
-    for i, draw in enumerate(draws_list):
-        weight = weights_array[i]
-        for triplet in combinations(draw, 3):
-            # Ensure triplet is always sorted for hashing
-            triplets_weighted[tuple(sorted(triplet))] += weight
-    return triplets_weighted
-
-def calculate_lottery_probability(draw_count=12, total_numbers=66, match=4):
-    """Calculate the exact probability of matching 'match' numbers dynamically."""
-    if not SCIPY_AVAILABLE:
-        # Fallback value 
-        return 0.00000316 
+    zona1 = list(range(numar_min, numar_min + zone_size))
+    zona2 = list(range(numar_min + zone_size, numar_min + 2*zone_size))
+    zona3 = list(range(numar_min + 2*zone_size, numar_max + 1))
     
-    try:
-        # Use exact combination calculation
-        numerator = comb(draw_count, match) * comb(total_numbers - draw_count, draw_count - match)
-        denominator = comb(total_numbers, draw_count)
-    except ValueError:
-        return 0.00000316
-    
-    return numerator / denominator if denominator > 0 else 0.0
-
-# ============================================================================
-# LOTTERY ANALYZER
-# ============================================================================
-class LotteryAnalyzer:
-    def __init__(self):
-        self.draws = []
-        self.frequency_weighted = defaultdict(float)
-        self.triplets_weighted = defaultdict(float)
-        self.gaps = defaultdict(int)
-        self.markov_probabilities = defaultdict(lambda: defaultdict(float))
-        self.ml_probs_array = np.zeros(67, dtype=np.float64)
-        self.sum_mu = 0
-        self.sum_sigma = 0
-
-    def load_and_analyze(self, file_content):
-        """Main entry point for loading and analysis."""
-        self.draws = []
-        lines = file_content.strip().split('\n')
-        for line in lines:
-            if not line.strip(): continue
-            line = line.strip().replace(',', ' ')
-            parts = [p.strip() for p in line.split() if p.strip()]
-            
-            if len(parts) >= 12:
-                try:
-                    start_index = 1 if len(parts) >= 13 and parts[0].isdigit() else 0 
-                    numbers = [int(parts[i]) for i in range(start_index, start_index + 12)]
-                    
-                    if all(1 <= n <= 66 for n in numbers) and len(set(numbers)) == 12:
-                        self.draws.append(sorted(numbers))
-                except (ValueError, IndexError):
-                    continue
-
-        if len(self.draws) > 5000:
-            self.draws = self.draws[-5000:]
-            
-        if self.draws:
-            self._analyze_v7()
-
-    def _analyze_v7(self):
-        """v7 analysis with focus on triplets"""
-        n = len(self.draws)
-        if n < 10:
-            st.session_state.warnings.append(f"AVERTISMENT: Doar {n} extrageri - analiza limitata.")
-        
-        weights = np.exp(np.linspace(-2, 0, n))
-        weights = weights / np.sum(weights)
-
-        # Weighted frequency 
-        self.frequency_weighted = defaultdict(float)
-        for i, draw in enumerate(self.draws):
-            for num in draw:
-                self.frequency_weighted[num] += weights[i]
-        
-        # Weighted triplets 
-        recent_draws = self.draws[-2000:] if len(self.draws) > 2000 else self.draws
-        recent_n = len(recent_draws)
-        recent_weights = np.exp(np.linspace(-2, 0, recent_n))
-        recent_weights = recent_weights / np.sum(recent_weights)
-
-        self.triplets_weighted = calculate_triplets_weighted_stable(recent_draws, recent_weights)
-        
-        # Gaps, Markov, Sums, ML Probs
-        for num in range(1, 67):
-            for i in range(len(self.draws) - 1, -1, -1):
-                if num in self.draws[i]:
-                    self.gaps[num] = len(self.draws) - 1 - i
-                    break
-            if num not in self.gaps: self.gaps[num] = len(self.draws)
-            self.ml_probs_array[num] = self.frequency_weighted.get(num, 0.0)
-            
-        # Markov
-        markov_counts = defaultdict(lambda: defaultdict(float))
-        for i in range(len(self.draws) - 1):
-            weight = weights[i]
-            for num1 in self.draws[i]:
-                for num2 in self.draws[i + 1]:
-                    markov_counts[num1][num2] += weight
-        for num1 in markov_counts:
-            total = sum(markov_counts[num1].values())
-            if total > 0:
-                for num2 in markov_counts[num1]:
-                    self.markov_probabilities[num1][num2] = markov_counts[num1][num2] / total
-                    
-        # Sums
-        sums = [sum(draw) for draw in self.draws]
-        self.sum_mu = np.mean(sums)
-        self.sum_sigma = np.std(sums)
-            
-        max_prob = np.max(self.ml_probs_array[1:])
-        if max_prob > 0: self.ml_probs_array[1:] /= max_prob
-
-    def extract_all_triplets_from_draws(self, min_support=0.01):
-        """Extract top triplets from draws (Limit set to 50000 for flexibility)."""
-        top_triplets = []
-        min_weight_threshold = min_support * len(self.draws) 
-
-        for triplet, weight in sorted(self.triplets_weighted.items(), key=lambda x: x[1], reverse=True):
-            if weight >= min_weight_threshold: 
-                top_triplets.append((list(triplet), weight))
-            # V7.2 FIX: Limita interna marita de la 5000 la 50000
-            if len(top_triplets) >= 50000: 
-                break
-        return top_triplets
-    
-    def get_candidate_score(self, triplet, num):
-        """Calculates a normalized score for a single candidate number."""
-        triplet_set = set(triplet)
-        if num in triplet_set:
-            return -999999
-            
-        # Normalization factors
-        max_markov = 1.0 
-        max_ml = 1.0
-        max_freq = max(self.frequency_weighted.values()) if self.frequency_weighted else 1.0
-        max_gap = max(self.gaps.values()) if self.gaps else 1.0
-        
-        # Normalized Markov score
-        last_num = triplet[-1]
-        markov_score = self.markov_probabilities[last_num].get(num, 0.0) / max(max_markov, 0.01) * 10
-        
-        # ML probability score (Weighted Frequency)
-        ml_score = self.ml_probs_array[num] / max(max_ml, 0.01) * 15
-        
-        # Gap score (Penalty: closer to 0 is better)
-        gap_score = self.gaps.get(num, len(self.draws)) / max(max_gap, 0.01)
-        gap_penalty = gap_score * -5 
-        
-        # Frequency score (Weighted Frequency)
-        freq_score = self.frequency_weighted.get(num, 0.0) / max(max_freq, 0.01) * 5
-        
-        return markov_score + ml_score + gap_penalty + freq_score
-
-    def get_complementary_number(self, triplet):
-        """Get top 5 candidate numbers to complete quad."""
-        candidates = []
-        for num in range(1, 67):
-            score = self.get_candidate_score(triplet, num)
-            if score > -999999: 
-                candidates.append((num, score))
-                
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return candidates[:5]
-
-# ============================================================================
-# TRIPLET EXTRACTOR
-# ============================================================================
-class TripletExtractor:
-    def __init__(self, analyzer):
-        self.analyzer = analyzer
-
-    def _extract_from_variants_batch(self, variants_batch):
-        """Extract triplets from variant batch"""
-        triplet_scores = defaultdict(float)
-        for variant in variants_batch:
-            if len(variant) >= 3:
-                for triplet in combinations(variant, 3):
-                    triplet_tuple = tuple(sorted(triplet))
-                    base_score = self.analyzer.triplets_weighted.get(triplet_tuple, 0.0)
-                    freq_score = sum(self.analyzer.frequency_weighted.get(n, 0.0) for n in triplet) / 3.0
-                    triplet_scores[triplet_tuple] += base_score * 2.0 + freq_score * 0.5 
-        return triplet_scores
-
-    def _extract_from_variants(self, variants):
-        """Extract triplets from variant list with parallel processing"""
-        if not variants: return {}
-        num_workers = min(4, multiprocessing.cpu_count())
-        batch_size = max(1000, len(variants) // num_workers)
-        batches = [variants[i:i+batch_size] for i in range(0, len(variants), batch_size)]
-        triplet_scores = defaultdict(float)
-        try:
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [executor.submit(self._extract_from_variants_batch, batch) for batch in batches]
-                for future in futures:
-                    batch_scores = future.result(timeout=60)
-                    for triplet, score in batch_scores.items():
-                        triplet_scores[triplet] += score
-        except Exception as e:
-            st.session_state.warnings.append(f"AVERTISMENT: Eroare ThreadPool, fallback la serial: {e}")
-            for batch in batches:
-                batch_scores = self._extract_from_variants_batch(batch)
-                for triplet, score in batch_scores.items():
-                    triplet_scores[triplet] += score
-        return triplet_scores
-
-    def extract_top_triplets(self, pool_variants=None, top_n=2000):
-        """Extract top N triplets from draws or pool based purely on score."""
-        if pool_variants is None:
-            triplets = self.analyzer.extract_all_triplets_from_draws()
-        else:
-            triplet_scores = self._extract_from_variants(pool_variants)
-            # Sort all triplets found and convert to desired format
-            triplets = [(list(t), s) for t, s in sorted(triplet_scores.items(), key=lambda x: x[1], reverse=True)]
-
-        return triplets[:top_n]
-
-# ============================================================================
-# QUAD EXTENDER
-# ============================================================================
-class QuadExtender:
-    def __init__(self, analyzer):
-        self.analyzer = analyzer
-        self.num_workers = min(4, multiprocessing.cpu_count())
-
-    def _score_candidate_batch(self, batch_data):
-        """Batch function for scoring and selecting best candidate for a set of triplets."""
-        results = []
-        for triplet, triplet_score in batch_data:
-            candidates = self.analyzer.get_complementary_number(triplet)
-            best_num = None
-            best_score = -999999
-            
-            for num, num_score in candidates:
-                total_score = triplet_score * 0.5 + num_score
-                
-                if total_score > best_score:
-                    best_score = total_score
-                    best_num = num
-            
-            results.append((best_num, best_score))
-        return results
-
-    def generate_quads_from_triplets(self, triplets, num_variante=500):
-        """Generate 4/4 quads from triplets based on score, enforcing only quad uniqueness."""
-        quads = []
-        seen_quads_sets = set() 
-        
-        target_triplets = triplets[:num_variante * 2] if len(triplets) > num_variante * 2 else triplets
-        
-        batch_data = []
-        for triplet, triplet_score in target_triplets:
-            batch_data.append((triplet, triplet_score))
-
-        results = []
-        try: 
-            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                chunk_size = max(50, len(batch_data) // self.num_workers)
-                chunks = [batch_data[i:i + chunk_size] for i in range(0, len(batch_data), chunk_size)]
-                
-                futures = [executor.submit(self._score_candidate_batch, chunk) for chunk in chunks]
-                for future in futures:
-                    results.extend(future.result(timeout=60))
-        except Exception as e:
-            st.session_state.warnings.append(f"AVERTISMENT: Eroare ThreadPool in QuadExtender, fallback la serial: {e}")
-            results = self._score_candidate_batch(batch_data) # Serial fallback
-
-        for i, ((triplet, _), (best_num, best_score)) in enumerate(zip(target_triplets, results)):
-            if len(quads) >= num_variante:
-                break
-
-            if best_num is not None:
-                quad = sorted(triplet + [best_num])
-                quad_set = tuple(quad) 
-                
-                # Final check for uniqueness (must not be an exact duplicate of a previously generated quad)
-                if quad_set not in seen_quads_sets:
-                    quads.append((quad, best_score, triplet))
-                    seen_quads_sets.add(quad_set)
-        
-        if len(quads) < num_variante:
-            st.warning(f"Generat doar {len(quads)}/{num_variante} quad-uri unice (setul de triplete este epuizat).")
-
-        return quads[:num_variante]
-
-# ============================================================================
-# COVERAGE OPTIMIZER
-# ============================================================================
-class CoverageOptimizer:
-    def calculate_coverage(self, quads):
-        """Calculate coverage statistics with improved score factoring."""
-        
-        if not quads:
-            return {
-                'covered_triplets': 0, 'triplet_coverage_percent': 0.0,
-                'covered_quads': 0, 'quad_coverage_percent': 0.0,
-                'estimated_win_chance': 0.0, 'avg_score': 0.0, 'max_score': 0.0
-            }
-
-        all_triplets = set()
-        all_quads_set = set()
-        scores = []
-        
-        for quad, score, _ in quads:
-            all_quads_set.add(tuple(quad))
-            for triplet in combinations(quad, 3):
-                all_triplets.add(triplet)
-            scores.append(score)
-        
-        # FIX V7.1: Verificare pentru a evita np.mean/np.max pe liste goale
-        avg_score = np.mean(scores) if scores else 0.0
-        max_score = np.max(scores) if scores else 0.0
-        max_score_theoretical = 50 
-
-        total_possible_triplets = 45760  
-        total_possible_quads = 73815  
-
-        triplet_coverage = len(all_triplets) / total_possible_triplets * 100
-        quad_coverage = len(all_quads_set) / total_possible_quads * 100
-
-        single_quad_prob = calculate_lottery_probability(match=4) 
-        num_quads = len(quads)
-        win_chance = (1 - (1 - single_quad_prob) ** num_quads) * 100
-
-        score_factor = avg_score / max_score_theoretical 
-        
-        coverage_base = min(1.0, (triplet_coverage + quad_coverage) / 20.0) 
-        
-        coverage_factor = coverage_base * (1 + score_factor * 0.2) 
-
-        estimated_win = win_chance * min(coverage_factor, 1.5) 
-
-        return {
-            'covered_triplets': len(all_triplets),
-            'triplet_coverage_percent': triplet_coverage,
-            'covered_quads': len(all_quads_set),
-            'quad_coverage_percent': quad_coverage,
-            'estimated_win_chance': estimated_win,
-            'avg_score': avg_score,
-            'max_score': max_score
-        }
-
-# ============================================================================
-# BACKTESTER
-# ============================================================================
-class Backtester:
-    def __init__(self, analyzer):
-        self.analyzer = analyzer
-
-    def run_backtest(self, quads, num_draws=100):
-        if not quads:
-            return 0, 0, 0, 0
-            
-        test_draws = self.analyzer.draws[-num_draws:]
-        quads_sets = [set(q) for q, _, _ in quads]
-        
-        total_hits = defaultdict(int) 
-        
-        for draw in test_draws:
-            draw_set = set(draw)
-            for quad_set in quads_sets:
-                matches = len(draw_set.intersection(quad_set))
-                if matches >= 2:
-                    total_hits[matches] += 1
-        
-        avg_hits_2 = total_hits[2] / num_draws
-        avg_hits_3 = total_hits[3] / num_draws
-        avg_hits_4 = total_hits[4] / num_draws
-        
-        expected_hits = (avg_hits_2 * 2) + (avg_hits_3 * 3) + (avg_hits_4 * 4)
-        
-        return avg_hits_2, avg_hits_3, avg_hits_4, expected_hits
-
-# ============================================================================
-# UTILITIES (Direct Loading)
-# ============================================================================
-def handle_analysis_process(file_content):
-    """V7.1: Function dedicata pentru a preveni 'Can't get local object' la initializare."""
-    analyzer = LotteryAnalyzer()
-    analyzer.load_and_analyze(file_content)
-    return analyzer
-
-# ============================================================================
-# PAGE CONFIG & CSS
-# ============================================================================
-st.set_page_config(page_title="Lottery Quad Builder v7.2", page_icon="o", layout="wide", initial_sidebar_state="expanded")
-
-def apply_custom_css(dark_mode=False):
-    if dark_mode:
-        bg_color, text_color, card_bg = "#0E1117", "#FAFAFA", "#262730"
+    if numar_numere == 4:
+        # Pentru 4 numere: variază între 1-1-2, 1-2-1, 2-1-1
+        distributii = [(1,1,2), (1,2,1), (2,1,1)]
+        dist = random.choice(distributii)
     else:
-        bg_color, text_color, card_bg = "#FFFFFF", "#262730", "#F0F2F6"
-    st.markdown(f"""
-        <style>
-        .stApp {{ background: linear-gradient(135deg, {bg_color} 0%, {card_bg} 100%); }}
-        .main-header {{ text-align: center; padding: 20px; background: linear-gradient(90deg, #FF4B4B, #00D4FF); border-radius: 10px; color: white; }}
-        </style>
-    """, unsafe_allow_html=True)
+        # Pentru alte cantități
+        numere_per_zona = numar_numere // 3
+        rest = numar_numere % 3
+        dist = (numere_per_zona + (1 if rest > 0 else 0),
+                numere_per_zona + (1 if rest > 1 else 0),
+                numere_per_zona)
+    
+    combinatie = []
+    combinatie.extend(random.sample(zona1, min(dist[0], len(zona1))))
+    combinatie.extend(random.sample(zona2, min(dist[1], len(zona2))))
+    combinatie.extend(random.sample(zona3, min(dist[2], len(zona3))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
 
-# ============================================================================
-# SESSION STATE 
-# ============================================================================
-if 'analyzer' not in st.session_state: st.session_state.analyzer = None
-if 'variants_pool' not in st.session_state: st.session_state.variants_pool = []
-if 'top_triplets' not in st.session_state: st.session_state.top_triplets = []
-if 'generated_quads' not in st.session_state: st.session_state.generated_quads = []
-if 'dark_mode' not in st.session_state: st.session_state.dark_mode = False
-if 'warnings' not in st.session_state: st.session_state.warnings = []
+def strategie_pare_impare(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 2: Echilibru pare/impare
+    Pentru 4 numere: 2 pare + 2 impare (sau 3+1, 1+3)"""
+    pare = [x for x in range(numar_min, numar_max + 1) if x % 2 == 0]
+    impare = [x for x in range(numar_min, numar_max + 1) if x % 2 != 0]
+    
+    if numar_numere == 4:
+        # Variație: 2-2, 3-1, 1-3
+        distributii = [(2,2), (3,1), (1,3)]
+        dist = random.choice(distributii)
+        numar_pare, numar_impare = dist
+    else:
+        numar_pare = numar_numere // 2
+        numar_impare = numar_numere - numar_pare
+        variatie = random.choice([-1, 0, 1])
+        numar_pare += variatie
+        numar_impare -= variatie
+    
+    combinatie = []
+    if len(pare) >= numar_pare:
+        combinatie.extend(random.sample(pare, numar_pare))
+    if len(impare) >= numar_impare:
+        combinatie.extend(random.sample(impare, numar_impare))
+    
+    return sorted(combinatie)
 
-apply_custom_css(st.session_state.dark_mode)
+def strategie_frecventa_hot(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 3: Favorizează numere frecvente
+    Pentru 4 numere: 2-3 HOT + 1-2 random"""
+    if not runde_existente:
+        return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+    
+    toate_numerele = [num for runda in runde_existente for num in runda]
+    frecventa = Counter(toate_numerele)
+    
+    numere_hot = [num for num, freq in frecventa.most_common(23)]
+    numere_hot = [n for n in numere_hot if numar_min <= n <= numar_max]
+    
+    if numar_numere == 4:
+        # 2-3 din HOT, restul random
+        numar_hot = random.choice([2, 3])
+    else:
+        numar_hot = int(numar_numere * 0.6)
+    
+    numar_random = numar_numere - numar_hot
+    
+    combinatie = []
+    if len(numere_hot) >= numar_hot:
+        combinatie.extend(random.sample(numere_hot, numar_hot))
+    
+    numere_restante = [n for n in range(numar_min, numar_max + 1) if n not in combinatie]
+    combinatie.extend(random.sample(numere_restante, min(numar_random, len(numere_restante))))
+    
+    return sorted(combinatie[:numar_numere])
 
-# ============================================================================
+def strategie_top23_focus(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 4: 3 din TOP 23 + 1 din rest
+    Pentru 4 numere: 2-3 din TOP 23 + 1-2 din rest"""
+    if not runde_existente:
+        return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+    
+    toate_numerele = [num for runda in runde_existente for num in runda]
+    frecventa = Counter(toate_numerele)
+    
+    top23 = [num for num, freq in frecventa.most_common(23)]
+    top23 = [n for n in top23 if numar_min <= n <= numar_max]
+    
+    restul = [n for n in range(numar_min, numar_max + 1) if n not in top23]
+    
+    if numar_numere == 4:
+        # Variație: 2+2 sau 3+1
+        numar_top = random.choice([2, 3])
+    else:
+        numar_top = min(3, numar_numere - 1)
+    
+    numar_rest = numar_numere - numar_top
+    
+    combinatie = []
+    if len(top23) >= numar_top:
+        combinatie.extend(random.sample(top23, numar_top))
+    if len(restul) >= numar_rest:
+        combinatie.extend(random.sample(restul, numar_rest))
+    
+    return sorted(combinatie)
+
+def strategie_mixare_cold_hot(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 5: Mix HOT + COLD + WARM
+    Pentru 4 numere: 1 HOT + 1 COLD + 2 WARM"""
+    if not runde_existente:
+        return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+    
+    toate_numerele = [num for runda in runde_existente for num in runda]
+    frecventa = Counter(toate_numerele)
+    toate_posibile = set(range(numar_min, numar_max + 1))
+    
+    numere_hot = [num for num, freq in frecventa.most_common(20)]
+    numere_cold = list(toate_posibile - set(frecventa.keys())) + \
+                  [num for num, freq in frecventa.most_common()[-20:]]
+    numere_warm = list(set(frecventa.keys()) - set(numere_hot) - set(numere_cold))
+    
+    if numar_numere == 4:
+        # 1 HOT + 1 COLD + 2 WARM
+        combinatie = []
+        if numere_hot:
+            combinatie.append(random.choice(numere_hot))
+        if numere_cold:
+            combinatie.append(random.choice(numere_cold))
+        if numere_warm and len(numere_warm) >= 2:
+            combinatie.extend(random.sample(numere_warm, 2))
+    else:
+        numere_per_categorie = numar_numere // 3
+        combinatie = []
+        if numere_hot:
+            combinatie.extend(random.sample(numere_hot, min(numere_per_categorie, len(numere_hot))))
+        if numere_cold:
+            combinatie.extend(random.sample(numere_cold, min(numere_per_categorie, len(numere_cold))))
+        if numere_warm:
+            combinatie.extend(random.sample(numere_warm, min(numere_per_categorie, len(numere_warm))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_distanta_uniforma(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 6: Spacing echidistant
+    Pentru 4 numere: distanță medie ~15-20 unități"""
+    if numar_numere == 4:
+        # Spacing țintă: 15-20 unități pentru Keno 66
+        distanta_medie = (numar_max - numar_min) // 5  # ~13 pentru 66
+    else:
+        distanta_medie = (numar_max - numar_min) // numar_numere
+    
+    combinatie = []
+    current = numar_min + random.randint(0, distanta_medie)
+    
+    for i in range(numar_numere):
+        if current <= numar_max:
+            combinatie.append(current)
+            variatie = random.randint(int(distanta_medie * 0.7), int(distanta_medie * 1.3))
+            current += variatie
+        else:
+            break
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_evita_consecutive(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 7: Zero numere consecutive
+    Optim pentru 4 numere"""
+    combinatie = []
+    numere_disponibile = list(range(numar_min, numar_max + 1))
+    
+    while len(combinatie) < numar_numere and numere_disponibile:
+        num = random.choice(numere_disponibile)
+        combinatie.append(num)
+        numere_disponibile = [n for n in numere_disponibile 
+                            if n != num and n != num-1 and n != num+1]
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            if not combinatie or all(abs(num - c) > 1 for c in combinatie):
+                combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_multipli(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 8: Multipli de 3, 5, 7
+    Pentru 4 numere: 1-2 multipli + 2-3 random"""
+    multipli_3 = [x for x in range(numar_min, numar_max + 1) if x % 3 == 0]
+    multipli_5 = [x for x in range(numar_min, numar_max + 1) if x % 5 == 0]
+    multipli_7 = [x for x in range(numar_min, numar_max + 1) if x % 7 == 0]
+    
+    if numar_numere == 4:
+        # 1-2 multipli + restul random
+        num_multipli = random.choice([1, 2])
+    else:
+        num_multipli = int(numar_numere * 0.4)
+    
+    num_random = numar_numere - num_multipli
+    
+    # Combină toți multiplii
+    toti_multiplii = list(set(multipli_3 + multipli_5 + multipli_7))
+    
+    combinatie = []
+    if toti_multiplii and len(toti_multiplii) >= num_multipli:
+        combinatie.extend(random.sample(toti_multiplii, num_multipli))
+    
+    numere_restante = [n for n in range(numar_min, numar_max + 1) if n not in combinatie]
+    combinatie.extend(random.sample(numere_restante, min(num_random, len(numere_restante))))
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_cuadrante_extreme(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 9: Accent pe capete
+    Pentru 4 numere: 2 din start + 2 din final"""
+    interval = numar_max - numar_min + 1
+    
+    if numar_numere == 4:
+        # 2 + 2 de la capete
+        cuadrant1 = list(range(numar_min, numar_min + interval // 4))
+        cuadrant4 = list(range(numar_max - interval // 4 + 1, numar_max + 1))
+        
+        combinatie = []
+        combinatie.extend(random.sample(cuadrant1, min(2, len(cuadrant1))))
+        combinatie.extend(random.sample(cuadrant4, min(2, len(cuadrant4))))
+    else:
+        cuadrant1 = list(range(numar_min, numar_min + interval // 4))
+        cuadrant4 = list(range(numar_max - interval // 4 + 1, numar_max + 1))
+        mijloc = list(range(numar_min + interval // 4, numar_max - interval // 4 + 1))
+        
+        num_c1 = int(numar_numere * 0.4)
+        num_c4 = int(numar_numere * 0.4)
+        num_mijloc = numar_numere - num_c1 - num_c4
+        
+        combinatie = []
+        combinatie.extend(random.sample(cuadrant1, min(num_c1, len(cuadrant1))))
+        combinatie.extend(random.sample(cuadrant4, min(num_c4, len(cuadrant4))))
+        combinatie.extend(random.sample(mijloc, min(num_mijloc, len(mijloc))))
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_oglinda(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 10: Perechi simetrice
+    Pentru 4 numere: 2 perechi oglindă"""
+    centru = (numar_min + numar_max) / 2
+    
+    if numar_numere == 4:
+        # 2 perechi simetrice
+        numere_sub_centru = [n for n in range(numar_min, int(centru) + 1)]
+        numere_selectate = random.sample(numere_sub_centru, 2)
+        
+        combinatie = []
+        for num in numere_selectate:
+            combinatie.append(num)
+            oglinda = numar_max + numar_min - num
+            if oglinda != num and numar_min <= oglinda <= numar_max:
+                combinatie.append(oglinda)
+    else:
+        numere_sub_centru = [n for n in range(numar_min, int(centru) + 1)]
+        numar_perechi = numar_numere // 2
+        numere_selectate = random.sample(numere_sub_centru, min(numar_perechi, len(numere_sub_centru)))
+        
+        combinatie = []
+        for num in numere_selectate:
+            combinatie.append(num)
+            oglinda = numar_max + numar_min - num
+            if oglinda != num and numar_min <= oglinda <= numar_max:
+                combinatie.append(oglinda)
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_fibonacci(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 11: Fibonacci adaptat
+    Pentru 4 numere: 2-3 Fibonacci + 1-2 random"""
+    fib = [1, 2]
+    while fib[-1] < numar_max:
+        fib.append(fib[-1] + fib[-2])
+    
+    fib_in_range = [f for f in fib if numar_min <= f <= numar_max]
+    
+    if numar_numere == 4:
+        numar_fib = random.choice([2, 3])
+    else:
+        numar_fib = min(int(numar_numere * 0.6), len(fib_in_range))
+    
+    numar_random = numar_numere - numar_fib
+    
+    combinatie = []
+    if fib_in_range:
+        combinatie.extend(random.sample(fib_in_range, min(numar_fib, len(fib_in_range))))
+    
+    numere_restante = [n for n in range(numar_min, numar_max + 1) if n not in combinatie]
+    combinatie.extend(random.sample(numere_restante, min(numar_random, len(numere_restante))))
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_temperatura_graduala(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 12: 3 HOT + 6 WARM + 3 COLD
+    Pentru 4 numere: 1 HOT + 2 WARM + 1 COLD"""
+    if not runde_existente:
+        return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+    
+    toate_numerele = [num for runda in runde_existente for num in runda]
+    frecventa = Counter(toate_numerele)
+    toate_posibile = list(range(numar_min, numar_max + 1))
+    
+    # Sortare după frecvență
+    sorted_freq = sorted([(num, freq) for num, freq in frecventa.items()], 
+                        key=lambda x: x[1], reverse=True)
+    
+    total = len(toate_posibile)
+    hot_threshold = total // 5  # Top 20%
+    cold_threshold = total - total // 5  # Bottom 20%
+    
+    hot = [num for num, freq in sorted_freq[:hot_threshold]]
+    cold_candidates = set(toate_posibile) - set(frecventa.keys())
+    cold = list(cold_candidates) + [num for num, freq in sorted_freq[cold_threshold:]]
+    warm = [num for num in toate_posibile if num not in hot and num not in cold]
+    
+    if numar_numere == 4:
+        combinatie = []
+        if hot:
+            combinatie.append(random.choice(hot))
+        if warm and len(warm) >= 2:
+            combinatie.extend(random.sample(warm, 2))
+        if cold:
+            combinatie.append(random.choice(cold))
+    else:
+        num_hot = max(1, int(numar_numere * 0.25))
+        num_cold = max(1, int(numar_numere * 0.25))
+        num_warm = numar_numere - num_hot - num_cold
+        
+        combinatie = []
+        if hot:
+            combinatie.extend(random.sample(hot, min(num_hot, len(hot))))
+        if warm:
+            combinatie.extend(random.sample(warm, min(num_warm, len(warm))))
+        if cold:
+            combinatie.extend(random.sample(cold, min(num_cold, len(cold))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_salturi_prime(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 13: Numere prime
+    Pentru 4 numere: 2 prime + 2 non-prime"""
+    def este_prim(n):
+        if n < 2:
+            return False
+        for i in range(2, int(n**0.5) + 1):
+            if n % i == 0:
+                return False
+        return True
+    
+    prime = [n for n in range(numar_min, numar_max + 1) if este_prim(n)]
+    non_prime = [n for n in range(numar_min, numar_max + 1) if not este_prim(n)]
+    
+    if numar_numere == 4:
+        num_prime = 2
+        num_non_prime = 2
+    else:
+        num_prime = numar_numere // 2
+        num_non_prime = numar_numere - num_prime
+    
+    combinatie = []
+    if prime and len(prime) >= num_prime:
+        combinatie.extend(random.sample(prime, num_prime))
+    if non_prime and len(non_prime) >= num_non_prime:
+        combinatie.extend(random.sample(non_prime, num_non_prime))
+    
+    return sorted(combinatie)
+
+def strategie_suma_controlata(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 14: Sumă controlată
+    Pentru 4 numere: sumă între 130-140 (media ~134 pentru 1-66)"""
+    if numar_numere == 4:
+        suma_min, suma_max = 130, 140
+    else:
+        # Media teoretică
+        media_per_numar = (numar_min + numar_max) / 2
+        suma_medie = media_per_numar * numar_numere
+        suma_min = suma_medie * 0.85
+        suma_max = suma_medie * 1.15
+    
+    max_incercari = 1000
+    for _ in range(max_incercari):
+        combinatie = sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+        suma = sum(combinatie)
+        if suma_min <= suma <= suma_max:
+            return combinatie
+    
+    # Fallback: returnează orice combinație
+    return sorted(random.sample(range(numar_min, numar_max + 1), numar_numere))
+
+def strategie_atractie_magnetica(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 15: Distanță minimă 3 între numere
+    Pentru 4 numere: |N[i] - N[i+1]| ≥ 3"""
+    combinatie = []
+    numere_disponibile = list(range(numar_min, numar_max + 1))
+    
+    while len(combinatie) < numar_numere and numere_disponibile:
+        if not combinatie:
+            num = random.choice(numere_disponibile)
+        else:
+            # Filtrează numerele prea apropiate de ultimul adăugat
+            candidati = [n for n in numere_disponibile if abs(n - combinatie[-1]) >= 3]
+            if not candidati:
+                break
+            num = random.choice(candidati)
+        
+        combinatie.append(num)
+        numere_disponibile.remove(num)
+    
+    # Completează dacă e nevoie (relaxare condiție)
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_percentile(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 16: Percentile 25-50-25
+    Pentru 4 numere: 1 din 0-25%, 2 din 25-75%, 1 din 75-100%"""
+    interval = numar_max - numar_min + 1
+    
+    p25 = numar_min + interval // 4
+    p75 = numar_min + 3 * interval // 4
+    
+    zona1 = list(range(numar_min, p25))
+    zona2 = list(range(p25, p75))
+    zona3 = list(range(p75, numar_max + 1))
+    
+    if numar_numere == 4:
+        combinatie = []
+        if zona1:
+            combinatie.append(random.choice(zona1))
+        if zona2 and len(zona2) >= 2:
+            combinatie.extend(random.sample(zona2, 2))
+        if zona3:
+            combinatie.append(random.choice(zona3))
+    else:
+        num_z1 = int(numar_numere * 0.25)
+        num_z3 = int(numar_numere * 0.25)
+        num_z2 = numar_numere - num_z1 - num_z3
+        
+        combinatie = []
+        if zona1:
+            combinatie.extend(random.sample(zona1, min(num_z1, len(zona1))))
+        if zona2:
+            combinatie.extend(random.sample(zona2, min(num_z2, len(zona2))))
+        if zona3:
+            combinatie.extend(random.sample(zona3, min(num_z3, len(zona3))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_perechi_incrucisate(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 17: Perechi (mic, mare) cu diferență 30-40
+    Pentru 4 numere: 2 perechi încrucișate"""
+    if numar_numere == 4:
+        # 2 perechi
+        numar_perechi = 2
+    else:
+        numar_perechi = numar_numere // 2
+    
+    combinatie = []
+    numere_mici = list(range(numar_min, numar_min + (numar_max - numar_min) // 3))
+    
+    for _ in range(numar_perechi):
+        if numere_mici:
+            mic = random.choice([n for n in numere_mici if n not in combinatie])
+            diferenta = random.randint(30, 40)
+            mare = min(mic + diferenta, numar_max)
+            
+            if mare not in combinatie:
+                combinatie.append(mic)
+                combinatie.append(mare)
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_curcubeu(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 18: Exact 2 numere din fiecare decadă
+    Pentru 4 numere: 1 număr din 4 decade diferite"""
+    decade = []
+    current = numar_min
+    decade_size = 10
+    
+    while current <= numar_max:
+        decada = list(range(current, min(current + decade_size, numar_max + 1)))
+        if decada:
+            decade.append(decada)
+        current += decade_size
+    
+    if numar_numere == 4:
+        # Ia 1 număr din 4 decade diferite
+        decade_selectate = random.sample(decade, min(4, len(decade)))
+        combinatie = [random.choice(dec) for dec in decade_selectate]
+    else:
+        numere_per_decada = max(1, numar_numere // len(decade))
+        combinatie = []
+        
+        for dec in decade:
+            if len(combinatie) < numar_numere:
+                combinatie.extend(random.sample(dec, min(numere_per_decada, len(dec))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_rotatie_ciclica(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 19: Rotație pe 6 zone
+    Pentru 4 numere: 1-2 numere din 2-4 zone"""
+    interval = numar_max - numar_min + 1
+    zone_size = interval // 6
+    
+    zone = []
+    for i in range(6):
+        start = numar_min + i * zone_size
+        end = numar_min + (i + 1) * zone_size if i < 5 else numar_max + 1
+        zona = list(range(start, end))
+        if zona:
+            zone.append(zona)
+    
+    if numar_numere == 4:
+        # Alege 2-4 zone, ia 1-2 numere din fiecare
+        numar_zone = random.choice([2, 3, 4])
+        zone_selectate = random.sample(zone, min(numar_zone, len(zone)))
+        
+        combinatie = []
+        numere_per_zona = numar_numere // numar_zone
+        rest = numar_numere % numar_zone
+        
+        for idx, zona in enumerate(zone_selectate):
+            nr = numere_per_zona + (1 if idx < rest else 0)
+            combinatie.extend(random.sample(zona, min(nr, len(zona))))
+    else:
+        combinatie = []
+        numere_per_zona = max(1, numar_numere // len(zone))
+        
+        for zona in zone:
+            if len(combinatie) < numar_numere:
+                combinatie.extend(random.sample(zona, min(numere_per_zona, len(zona))))
+    
+    while len(combinatie) < numar_numere:
+        num = random.randint(numar_min, numar_max)
+        if num not in combinatie:
+            combinatie.append(num)
+    
+    return sorted(combinatie[:numar_numere])
+
+def strategie_ai_hybrid(numar_numere, numar_min, numar_max, runde_existente=[]):
+    """Strategie 20: AI HYBRID - Combină top 5 strategii
+    Pentru 4 numere: Rotație între cele mai bune strategii"""
+    strategii_top = [
+        strategie_echilibru_perfect,
+        strategie_frecventa_hot,
+        strategie_distanta_uniforma,
+        strategie_top23_focus,
+        strategie_suma_controlata
+    ]
+    
+    # Alege aleator una din top 5
+    strategie_aleasa = random.choice(strategii_top)
+    return strategie_aleasa(numar_numere, numar_min, numar_max, runde_existente)
+
+# Dicționar cu toate strategiile
+STRATEGII = {
+    "🎯 Random Standard": {
+        "func": strategie_random_standard,
+        "descriere": "Generare aleatoare pură - fără restricții",
+        "optim_4": "✅ Universal"
+    },
+    "⚖️ Echilibru Perfect": {
+        "func": strategie_echilibru_perfect,
+        "descriere": "Zone 1-1-2 sau 2-1-1",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "🔢 Pare/Impare 50/50": {
+        "func": strategie_pare_impare,
+        "descriere": "2 pare + 2 impare (sau 3+1)",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "🔥 Frecvență HOT": {
+        "func": strategie_frecventa_hot,
+        "descriere": "2-3 HOT + 1-2 random (necesită istoric)",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "🎯 TOP 23 Focus": {
+        "func": strategie_top23_focus,
+        "descriere": "2-3 din TOP 23 + rest (necesită istoric)",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "❄️🔥 Mix COLD+HOT": {
+        "func": strategie_mixare_cold_hot,
+        "descriere": "1 HOT + 2 WARM + 1 COLD (necesită istoric)",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "📏 Distanță Uniformă": {
+        "func": strategie_distanta_uniforma,
+        "descriere": "Spacing ~15-20 unități",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🚫➡️ Evită Consecutive": {
+        "func": strategie_evita_consecutive,
+        "descriere": "Zero numere consecutive (5,6)",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🔢 Multipli 3-5-7": {
+        "func": strategie_multipli,
+        "descriere": "1-2 multipli + 2-3 random",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "📐 Cuadrante Extreme": {
+        "func": strategie_cuadrante_extreme,
+        "descriere": "2 start + 2 final",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "🪞 Oglindă Matematică": {
+        "func": strategie_oglinda,
+        "descriere": "2 perechi simetrice",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🌀 Fibonacci Adaptat": {
+        "func": strategie_fibonacci,
+        "descriere": "2-3 Fibonacci + 1-2 random",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🌡️ Temperatură Graduală": {
+        "func": strategie_temperatura_graduala,
+        "descriere": "1 HOT + 2 WARM + 1 COLD (necesită istoric)",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "⚡ Salturi Prime": {
+        "func": strategie_salturi_prime,
+        "descriere": "2 prime + 2 non-prime",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🎲 Sumă Controlată": {
+        "func": strategie_suma_controlata,
+        "descriere": "Sumă 130-140 (optim 4/66)",
+        "optim_4": "🔥 Recomandat 4/4"
+    },
+    "🧲 Atracție Magnetică": {
+        "func": strategie_atractie_magnetica,
+        "descriere": "Distanță ≥3 între numere",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "📊 Percentile 25-50-25": {
+        "func": strategie_percentile,
+        "descriere": "1 start + 2 mijloc + 1 final",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🎭 Perechi Încrucișate": {
+        "func": strategie_perechi_incrucisate,
+        "descriere": "2 perechi (mic+mare, Δ30-40)",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🌈 Curcubeu (Rainbow)": {
+        "func": strategie_curcubeu,
+        "descriere": "1 număr din 4 decade diferite",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🔄 Rotație Ciclică": {
+        "func": strategie_rotatie_ciclica,
+        "descriere": "1-2 numere din 2-4 zone",
+        "optim_4": "✅ Bun pentru 4/4"
+    },
+    "🧠 AI HYBRID": {
+        "func": strategie_ai_hybrid,
+        "descriere": "Combină top 5 strategii automat",
+        "optim_4": "🔥 Recomandat 4/4"
+    }
+}
+
+# ============================
+# FUNCȚII HELPER
+# ============================
+
+def valideaza_runda(runda_text, numar_numere_asteptat, numar_min, numar_max):
+    """Validează o rundă introdusă de utilizator"""
+    try:
+        numere = [int(x.strip()) for x in runda_text.strip().split(',')]
+        if len(numere) < 1:
+            return False, "Eroare: Runda trebuie să conțină cel puțin un număr"
+        return True, numere
+    except ValueError:
+        return False, "Eroare: Format invalid - folosește virgulă între numere"
+
+def genereaza_combinatii(numar_combinatii, numar_numere, numar_min, numar_max, strategii_selectate, runde_existente=[]):
+    """Generează combinații folosind strategiile selectate (rotație)"""
+    if not strategii_selectate:
+        strategii_selectate = ["🎯 Random Standard"]
+    
+    combinatii = []
+    
+    for i in range(numar_combinatii):
+        # Rotație între strategii
+        strategie_curenta = strategii_selectate[i % len(strategii_selectate)]
+        strategie_func = STRATEGII[strategie_curenta]["func"]
+        
+        combinatie = strategie_func(numar_numere, numar_min, numar_max, runde_existente)
+        combinatii.append(combinatie)
+    
+    return combinatii
+
+def formateaza_combinatie(id_combinatie, combinatie):
+    """Formatează o combinație în formatul ID, numere"""
+    numere_str = ' '.join(map(str, combinatie))
+    return f"{id_combinatie}, {numere_str}"
+
+# ============================
+# INTERFAȚĂ STREAMLIT
+# ============================
+
 # HEADER
-# ============================================================================
-col1, col2, col3 = st.columns([1, 2, 1])
-with col1:
-    if st.button("SOARE/LUNA Toggle"):
-        st.session_state.dark_mode = not st.session_state.dark_mode
-        st.rerun()
-with col2:
-    st.markdown("""
-        <div class="main-header">
-            <h1>Lottery Quad Builder v7.2</h1>
-            <p>Triplets to 4/4 (12/66) | Fara Overlap & Stabil</p>
-        </div>
-    """, unsafe_allow_html=True)
-with col3:
-    st.markdown("**v7.2.0**")
+st.title("🐲 GENERATOR DE BANI ♣️ - GeKKo 🐲")
+st.markdown("### Optimizat pentru 4/4 numere • Cehia Keno Rapido 12/66")
+st.markdown("---")
 
-# ============================================================================
-# SIDEBAR
-# ============================================================================
-with st.sidebar:
-    st.header("Import Extrageri")
-    uploaded_file = st.file_uploader("TXT Extrageri (5000+)", type=['txt'])
+# Configurare INIȚIALĂ
+if 'numar_min' not in st.session_state:
+    st.session_state.numar_min = 1
+if 'numar_max' not in st.session_state:
+    st.session_state.numar_max = 66
+if 'numar_numere_per_combinatie' not in st.session_state:
+    st.session_state.numar_numere_per_combinatie = 4
+
+# ============================
+# SECȚIUNEA 1: ISTORIC RUNDE
+# ============================
+st.header("📋 Istoric Runde")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    uploaded_file = st.file_uploader(
+        "📁 Importă runde din fișier .txt",
+        type=['txt'],
+        help="Fiecare rundă pe o linie nouă, numere separate prin virgulă"
+    )
+    
     if uploaded_file is not None:
         try:
             content = uploaded_file.read().decode('utf-8')
-            if st.button("Analizeaza", type="primary"):
-                st.session_state.warnings = [] 
-                with st.spinner("Analizand..."):
-                    st.session_state.analyzer = handle_analysis_process(content)
-                if st.session_state.analyzer and len(st.session_state.analyzer.draws) > 0:
-                    st.success("Extrageri OK!")
-                    st.balloons()
-                else:
-                    st.error("Fisierul nu contine extrageri valide (12/66).")
-        except Exception as e:
-            st.error(f"Eroare la incarcare: {e}")
-
-    if st.session_state.analyzer and len(st.session_state.analyzer.draws) > 0:
-        st.success("Extrageri incarcate!")
-
-    st.markdown("---")
-    st.header("Import Pool Variante (Optional)")
-    pool_file = st.file_uploader("CSV/TXT Pool (10000+)", type=['csv', 'txt'])
-    
-    if pool_file is not None:
-        st.info(f"Fisier Pool: **{pool_file.name}** gata de procesare.")
-        
-        if st.button("Incarca Pool"):
-            st.session_state.variants_pool = [] 
-            try:
-                with st.spinner("Procesam pool-ul..."):
-                    
-                    if pool_file.name.endswith('.txt'):
-                        content = pool_file.read().decode('utf-8')
-                        df = pd.DataFrame({'Variant': content.splitlines()})
-                    else: 
-                        df = pd.read_csv(pool_file)
-                        
-                    variants = []
-                    num_cols = [col for col in df.columns if 'Num' in col or 'n' in col.lower()]
-                    variant_col = [col for col in df.columns if 'Variant' in col]
-
-                    if variant_col:
-                        for _, row in df.iterrows():
-                            raw_string = str(row[variant_col[0]]).strip()
-                            
-                            if ',' in raw_string:
-                                combination_string = raw_string.split(',', 1)[1].strip()
-                            else:
-                                combination_string = raw_string
-
-                            raw_nums = combination_string.replace('-', ' ').split() 
-                            
-                            nums = []
-                            for x in raw_nums:
-                                if x.strip().isdigit():
-                                    nums.append(int(x.strip()))
-                            
-                            if len(nums) >= 1: 
-                                variants.append(sorted(nums))
-                    
-                    elif len(num_cols) >= 2: 
-                        data_cols = num_cols[1:] 
-                        for _, row in df.iterrows():
-                            try:
-                                nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
-                                if len(nums) >= 1: 
-                                    variants.append(sorted(nums))
-                            except (ValueError, TypeError): continue
-                    
-                    elif len(num_cols) == 1:
-                         data_cols = num_cols
-                         for _, row in df.iterrows():
-                            try:
-                                nums = [int(row[col]) for col in data_cols if pd.notna(row[col])]
-                                if len(nums) >= 1: 
-                                    variants.append(sorted(nums))
-                            except (ValueError, TypeError): continue
-                    
-                    else:
-                        raise ValueError("Coloana 'Variant' sau cel putin o coloana numerica nu au fost gasite.")
-
-                if len(variants) > 0:
-                    st.session_state.variants_pool = variants
-                    st.success(f"**{len(variants)}** variante incarcate!")
-                else:
-                    st.warning(f"Fisierul a fost procesat, dar **nu s-au gasit variante valide**.")
+            linii = content.strip().split('\n')
             
-            except Exception as e:
-                st.error(f"Eroare la incarcare Pool: {e}")
-
-    st.markdown("---")
-    st.subheader("Setari")
-    
-    # V7.2 FIX: Limita maxima marita la 40000
-    top_n = st.slider("Top Triplete de Extras", 500, 40000, 5000) 
-    st.session_state.settings = {
-        'top_n': top_n,
-    }
-
-    if st.session_state.warnings:
-        with st.expander("Avertismente & Note", expanded=True):
-            for warn in st.session_state.warnings:
-                st.caption(warn)
-    
-    st.markdown("---")
-    if st.session_state.analyzer:
-        st.metric("Extrageri Incarcate", len(st.session_state.analyzer.draws))
-    st.metric("Triplete Posibile", "45,760")
-
-# ============================================================================
-# MAIN TABS
-# ============================================================================
-if not st.session_state.analyzer or len(st.session_state.analyzer.draws) == 0: st.stop()
-
-analyzer = st.session_state.analyzer
-settings = st.session_state.settings
-
-tab1, tab2, tab3 = st.tabs(["Analiza Extrageri", "Extrage din Pool", "Genereaza 4/4"])
-
-with tab1:
-    st.header("Analiza Extrageri")
-    col1, col2, col3 = st.columns(3)
-    with col1: st.metric("Triplete Ponderate", len(analyzer.triplets_weighted))
-    with col2: st.metric("Suma Medie", f"{analyzer.sum_mu:.1f}")
-    with col3: st.metric("Deviatie Suma", f"{analyzer.sum_sigma:.1f}")
-
-    if st.button("Extrage Triplete din Extrageri"):
-        with st.spinner("Extragem..."):
-            extractor = TripletExtractor(analyzer)
-            triplets = extractor.extract_top_triplets(None, settings['top_n'])
-            st.session_state.top_triplets = triplets
-        st.success(f"S-au extras {len(triplets)} triplete!")
-
-    if st.session_state.top_triplets:
-        df = pd.DataFrame([
-            {'Triplet': f"{t[0][0]}-{t[0][1]}-{t[0][2]}", 'Scor': f"{t[1]:.4f}"}
-            for t in st.session_state.top_triplets[:50]
-        ])
-        st.dataframe(df, use_container_width=True)
-        txt_content = "\n".join([f"{t[0][0]}-{t[0][1]}-{t[0][2]} {t[1]:.4f}" for t in st.session_state.top_triplets])
-        st.download_button("Descarca TXT", txt_content, "triplets_from_draws.txt")
-
-with tab2:
-    st.header("Extrage din Pool Variante")
-    if not st.session_state.variants_pool:
-        st.warning("Importati pool-ul mai intai (din bara laterala).")
-    else:
-        st.info(f"Pool: {len(st.session_state.variants_pool)} variante")
-
-        if st.button("Gaseste Triplete Bune din Pool"):
-            if len(st.session_state.variants_pool) == 0:
-                st.error("Pool-ul este gol!")
-            else:
-                progress_bar = st.progress(0)
-                status = st.empty()
-                status.text("Pasul 1/2: Extragem...")
-                progress_bar.progress(30)
-                extractor = TripletExtractor(analyzer)
-                triplets = extractor.extract_top_triplets(
-                    st.session_state.variants_pool, settings['top_n']
-                )
-                progress_bar.progress(70)
-                status.text("Pasul 2/2: Sortare si filtrare...")
-                st.session_state.top_triplets = triplets
-                progress_bar.progress(100)
-                status.empty()
-                progress_bar.empty()
-
-                if len(triplets) == 0: st.warning("Nu s-au gasit triplete in Pool!")
-                else: st.success(f"S-au gasit {len(triplets)} triplete!")
-
-        if st.session_state.top_triplets and len(st.session_state.top_triplets) > 0:
-            df = pd.DataFrame([
-                {'Triplet': f"{t[0][0]}-{t[0][1]}-{t[0][2]}", 'Scor': f"{t[1]:.4f}"}
-                for t in st.session_state.top_triplets[:500]
-            ])
-            st.dataframe(df, use_container_width=True)
-
-with tab3:
-    st.header("Genereaza 4/4")
-
-    if not st.session_state.top_triplets or len(st.session_state.top_triplets) == 0:
-        st.warning("Extrageti triplete mai intai (din Tab 1 sau Tab 2).")
-    else:
-        max_possible_quads = len(st.session_state.top_triplets) 
-        
-        num_quads_slider_max = min(2000, max_possible_quads * 2) 
-        num_quads = st.slider("Cate Variante 4/4", 100, num_quads_slider_max, min(500, num_quads_slider_max))
-        
-        if max_possible_quads < num_quads: 
-             st.warning(f"Pool de triplete mic ({max_possible_quads}). Creste 'Top Triplete' in Setari.")
-
-        valid_triplets = [(t, s) for t, s in st.session_state.top_triplets if isinstance(t, list) and len(t) == 3]
-
-        triplet_options = [f"{t[0]}-{t[1]}-{t[2]}" for t, _ in valid_triplets]
-        triplet_map_score = {f"{t[0]}-{t[1]}-{t[2]}": f"{s:.4f}" for t, s in valid_triplets}
-        triplet_map = {f"{t[0]}-{t[1]}-{t[2]}": (t, score) for t, score in valid_triplets}
-        
-        selected_triplet_strs = st.multiselect(
-            "Selecteaza Triplete (Top 500 afisate, poti cauta restul)", 
-            options=triplet_options, 
-            default=triplet_options[:min(500, len(triplet_options))], 
-            format_func=lambda x: f"{x} (Scor: {triplet_map_score.get(x, 'N/A')})"
-        )
-
-        if st.button("Genereaza 4/4 Unice", type="primary"):
-            if not selected_triplet_strs:
-                st.warning("Selectati cel putin un triplet.")
-            else:
-                with st.spinner("Generam... (Paralelizare activa)"):
-                    selected_triplets = []
-                    for t_str in selected_triplet_strs:
-                         t_tuple, score = triplet_map.get(t_str)
-                         if t_tuple is not None:
-                            selected_triplets.append((t_tuple, score))
-                         
-                    extender = QuadExtender(analyzer)
-                    quads = extender.generate_quads_from_triplets(
-                        selected_triplets, num_quads
+            runde_noi = []
+            erori = []
+            
+            for idx, linie in enumerate(linii, 1):
+                if linie.strip():
+                    valid, rezultat = valideaza_runda(
+                        linie,
+                        st.session_state.numar_numere_per_combinatie,
+                        st.session_state.numar_min,
+                        st.session_state.numar_max
                     )
-                    st.session_state.generated_quads = quads
-                st.success(f"{len(quads)} quad-uri generate!")
-                st.balloons()
-
-        if st.session_state.generated_quads:
-            quads_list = st.session_state.generated_quads
-            st.markdown("---")
-            st.subheader("Rezultate & Performanta")
+                    if valid:
+                        runde_noi.append(rezultat)
+                    else:
+                        erori.append(f"Linia {idx}: {rezultat}")
             
-            optimizer = CoverageOptimizer()
-            cov = optimizer.calculate_coverage(quads_list)
+            if runde_noi:
+                # Nu mai salvăm toate pentru a evita lag-ul
+                # Păstrăm doar ultimele 100 pentru strategii HOT/COLD
+                st.session_state.runde_salvate = runde_noi[-100:] if len(runde_noi) > 100 else runde_noi
+                st.success(f"✅ {len(runde_noi)} runde procesate (salvate ultimele {len(st.session_state.runde_salvate)})!")
             
-            col1, col2, col3, col4 = st.columns(4)
-            with col1: st.metric("Scor Mediu", f"{cov['avg_score']:.2f}")
-            with col2: st.metric("Scor Max", f"{cov['max_score']:.2f}")
-            with col3: st.metric("Sansa Estimata (Ajustata)", f"{cov['estimated_win_chance']:.2f}%")
-            with col4: st.metric("Quad-uri Generate", len(quads_list))
+            if erori:
+                with st.expander("⚠️ Vezi erorile la import"):
+                    for eroare in erori:
+                        st.error(eroare)
+        
+        except Exception as e:
+            st.error(f"❌ Eroare la citirea fișierului: {str(e)}")
 
-            st.markdown("---")
-            st.subheader("Backtest pe Extrageri Recente")
+with col2:
+    if st.session_state.runde_salvate:
+        if st.button("🗑️ Șterge toate rundele", type="secondary"):
+            st.session_state.runde_salvate = []
+            st.rerun()
+
+# Adăugare manuală
+with st.expander("✍️ Adaugă runde manual"):
+    runda_manuala = st.text_area(
+        f"Introduceți rundele",
+        height=150,
+        placeholder=f"Exemplu:\n7, 27, 22, 34, 59, 14, 55, 52, 47, 41, 51, 11\n51, 3, 61, 10, 27, 55, 24, 39, 12, 14, 65, 58",
+        help="Fiecare rundă pe o linie nouă",
+        key="text_area_runde"
+    )
+    
+    if st.button("➕ Adaugă rundele", type="primary"):
+        if runda_manuala.strip():
+            linii = runda_manuala.strip().split('\n')
+            runde_adaugate = 0
             
-            if st.button("Test pe Ultimele 100 Extrageri"):
-                if len(analyzer.draws) < 100:
-                    st.warning(f"Doar {len(analyzer.draws)} extrageri disponibile. Nu se poate rula backtest-ul.")
-                else:
-                    with st.spinner("Rulare backtest..."):
-                        backtester = Backtester(analyzer)
-                        avg_2, avg_3, avg_4, expected_val = backtester.run_backtest(quads_list, num_draws=100)
-                    
-                    st.success("Backtest Finalizat!")
-                    b_col1, b_col2, b_col3, b_col4 = st.columns(4)
-                    with b_col1: st.metric("Avg Hits 2/4", f"{avg_2:.2f}")
-                    with b_col2: st.metric("Avg Hits 3/4", f"{avg_3:.2f}")
-                    with b_col3: st.metric("Avg Hits 4/4", f"{avg_4:.2f}")
-                    with b_col4: st.metric("Valoare Asteptata", f"{expected_val:.2f}")
-
-
-            st.markdown("---")
-            st.subheader("Lista Quad-urilor")
+            for linie in linii:
+                if linie.strip():
+                    valid, rezultat = valideaza_runda(
+                        linie,
+                        st.session_state.numar_numere_per_combinatie,
+                        st.session_state.numar_min,
+                        st.session_state.numar_max
+                    )
+                    if valid:
+                        runde_adaugate += 1
+                        # Salvăm doar pentru procesare temporară
+                        if runde_adaugate <= 100:  # Limităm la 100
+                            if runde_adaugate not in st.session_state.runde_salvate:
+                                st.session_state.runde_salvate.append(rezultat)
+                    else:
+                        st.error(rezultat)
             
-            df_display = pd.DataFrame([
-                {
-                    'Index': i + 1,
-                    'Quad': f"{q[0]}-{q[1]}-{q[2]}-{q[3]}",
-                    'Scor': f"{s:.2f}",
-                    'Triplet_Baza': f"{t[0]}-{t[1]}-{t[2]}"
-                }
-                for i, (q, s, t) in enumerate(quads_list)
-            ])
-            st.dataframe(df_display, use_container_width=True)
+            if runde_adaugate > 0:
+                st.success(f"✅ {runde_adaugate} runde valide au fost adăugate!")
+                st.rerun()
+        else:
+            st.warning("⚠️ Introduceți cel puțin o rundă!")
 
-            txt_lines_clean = []
-            for i, (q, s, t) in enumerate(quads_list):
-                combination_str = " ".join(map(str, q))
-                txt_lines_clean.append(f"{i+1}, {combination_str}")
-                
-            txt_content_clean = "\n".join(txt_lines_clean)
-            st.download_button("Descarca TXT (ID, Combinatie)", txt_content_clean, "quads_4of4_clean.txt")
+# Afișare runde salvate
+if st.session_state.runde_salvate:
+    with st.expander("👁️ Vezi rundele salvate"):
+        for idx, runda in enumerate(st.session_state.runde_salvate, 1):
+            st.text(f"{idx}. [{len(runda)} numere] {', '.join(map(str, runda))}")
 
-            df_export_clean = pd.DataFrame([
-                {
-                    'ID': i + 1,
-                    'Combinatie': " ".join(map(str, q)) 
-                }
-                for i, (q, s, t) in enumerate(quads_list)
-            ])
-
-            csv_content_clean = df_export_clean.to_csv(index=False)
-            st.download_button("Descarca CSV (ID, Combinatie)", csv_content_clean, "quads_4of4_clean.csv")
-
-# ============================================================================
-# FOOTER
-# ============================================================================
 st.markdown("---")
-st.caption("v7.2.0 | Limite triplete ajustate | Joaca responsabil")
+
+# ============================
+# SECȚIUNEA CONFIGURARE
+# ============================
+st.header("⚙️ Configurare")
+
+col_conf1, col_conf2, col_conf3 = st.columns(3)
+
+with col_conf1:
+    numar_max = st.number_input(
+        "Max",
+        min_value=2,
+        max_value=999999,
+        value=st.session_state.numar_max,
+        step=1,
+        key='input_numar_max'
+    )
+    st.session_state.numar_max = numar_max
+
+with col_conf2:
+    numar_numere_per_combinatie = st.number_input(
+        "Numere per bilet",
+        min_value=1,
+        max_value=1000,
+        value=st.session_state.numar_numere_per_combinatie,
+        step=1,
+        key='input_numar_numere'
+    )
+    st.session_state.numar_numere_per_combinatie = numar_numere_per_combinatie
+
+with col_conf3:
+    if st.button("🇨🇿 Preset Keno 4/66", type="secondary", use_container_width=True):
+        st.session_state.numar_min = 1
+        st.session_state.numar_max = 66
+        st.session_state.numar_numere_per_combinatie = 4
+        st.success("✅ Configurat: 4 numere din 66!")
+        st.rerun()
+
+st.session_state.numar_min = 1  # Mereu 1
+
+st.markdown("---")
+
+# ============================
+# SECȚIUNEA GENERARE + STRATEGII
+# ============================
+st.header("🚀 Generare Combinații")
+
+# Configurare generare
+col_gen1, col_gen2 = st.columns([1, 2])
+
+with col_gen1:
+    numar_combinatii = st.number_input(
+        "Câte combinații să generez",
+        min_value=1,
+        max_value=100000,
+        value=100,
+        step=10,
+        key="input_numar_combinatii"
+    )
+
+with col_gen2:
+    st.markdown("**Sfat:** Selectează 2-5 strategii pentru diversitate optimă!")
+
+# ============================
+# STRATEGII - 2 COLOANE (5+5)
+# ============================
+st.subheader("🎲 Selectează Strategiile (bifează 1 sau mai multe)")
+
+strategii_keys = list(STRATEGII.keys())
+jumatate = len(strategii_keys) // 2 + 1
+
+col_strat1, col_strat2 = st.columns(2)
+
+with col_strat1:
+    for strategie in strategii_keys[:jumatate]:
+        checked = st.checkbox(
+            f"{strategie}",
+            value=strategie in st.session_state.strategii_selectate,
+            key=f"check_{strategie}",
+            help=f"{STRATEGII[strategie]['descriere']} • {STRATEGII[strategie]['optim_4']}"
+        )
+        
+        if checked and strategie not in st.session_state.strategii_selectate:
+            st.session_state.strategii_selectate.append(strategie)
+        elif not checked and strategie in st.session_state.strategii_selectate:
+            st.session_state.strategii_selectate.remove(strategie)
+
+with col_strat2:
+    for strategie in strategii_keys[jumatate:]:
+        checked = st.checkbox(
+            f"{strategie}",
+            value=strategie in st.session_state.strategii_selectate,
+            key=f"check_{strategie}",
+            help=f"{STRATEGII[strategie]['descriere']} • {STRATEGII[strategie]['optim_4']}"
+        )
+        
+        if checked and strategie not in st.session_state.strategii_selectate:
+            st.session_state.strategii_selectate.append(strategie)
+        elif not checked and strategie in st.session_state.strategii_selectate:
+            st.session_state.strategii_selectate.remove(strategie)
+
+# Info strategii selectate
+if st.session_state.strategii_selectate:
+    st.success(f"✅ **{len(st.session_state.strategii_selectate)} strategii selectate:** {', '.join(st.session_state.strategii_selectate)}")
+else:
+    st.warning("⚠️ Nicio strategie selectată - va folosi Random Standard")
+
+# Butoane rapide
+st.markdown("#### ⚡ Preseturi Rapide:")
+col_preset1, col_preset2, col_preset3, col_preset4 = st.columns(4)
+
+with col_preset1:
+    if st.button("🔥 TOP 5 Recomandate", use_container_width=True):
+        st.session_state.strategii_selectate = [
+            "⚖️ Echilibru Perfect",
+            "🔢 Pare/Impare 50/50",
+            "🔥 Frecvență HOT",
+            "📐 Cuadrante Extreme",
+            "🎲 Sumă Controlată"
+        ]
+        st.rerun()
+
+with col_preset2:
+    if st.button("❄️🔥 Mix Temperaturi", use_container_width=True):
+        st.session_state.strategii_selectate = [
+            "🔥 Frecvență HOT",
+            "❄️🔥 Mix COLD+HOT",
+            "🌡️ Temperatură Graduală"
+        ]
+        st.rerun()
+
+with col_preset3:
+    if st.button("📊 Matematice", use_container_width=True):
+        st.session_state.strategii_selectate = [
+            "🪞 Oglindă Matematică",
+            "🌀 Fibonacci Adaptat",
+            "⚡ Salturi Prime",
+            "🔢 Multipli 3-5-7"
+        ]
+        st.rerun()
+
+with col_preset4:
+    if st.button("🗑️ Resetează Tot", type="secondary", use_container_width=True):
+        st.session_state.strategii_selectate = []
+        st.rerun()
+
+st.markdown("---")
+
+# BUTON GENERARE PRINCIPAL
+if st.button("🚀 GENEREAZĂ COMBINAȚII", type="primary", use_container_width=True):
+    strategii_active = st.session_state.strategii_selectate if st.session_state.strategii_selectate else ["🎯 Random Standard"]
+    
+    with st.spinner(f'🎲 Generare cu {len(strategii_active)} strategii...'):
+        combinatii = genereaza_combinatii(
+            numar_combinatii,
+            numar_numere_per_combinatie,
+            st.session_state.numar_min,
+            numar_max,
+            strategii_active,
+            st.session_state.runde_salvate
+        )
+        st.session_state.combinatii_generate = combinatii
+        st.success(f"✅ {len(combinatii)} combinații generate cu strategiile: **{', '.join(strategii_active)}**!")
+        st.balloons()
+
+st.markdown("---")
+
+# ============================
+# SECȚIUNEA REZULTATE
+# ============================
+if st.session_state.combinatii_generate:
+    st.header("📊 Rezultate Generate")
+    
+    # Pregătim textul
+    toate_variantele = '\n'.join([
+        formateaza_combinatie(i+1, comb) 
+        for i, comb in enumerate(st.session_state.combinatii_generate)
+    ])
+    
+    with st.expander("📋 Vezi textul pentru copiere manuală"):
+        st.code(toate_variantele, language=None)
+    
+    st.markdown("---")
+    
+    # Preview
+    st.subheader(f"📜 Preview combinații ({len(st.session_state.combinatii_generate)} total)")
+    
+    toate_combinatii_text = []
+    for i, comb in enumerate(st.session_state.combinatii_generate, 1):
+        toate_combinatii_text.append(formateaza_combinatie(i, comb))
+    
+    st.text_area(
+        "Scroll pentru toate combinațiile:",
+        value='\n'.join(toate_combinatii_text),
+        height=300,
+        disabled=True,
+        key="preview_toate_combinatiile"
+    )
+    
+    st.markdown("---")
+    
+    # ============================
+    # SECȚIUNEA EXPORT
+    # ============================
+    st.header("💾 Export")
+    
+    continut_fisier = '\n'.join([
+        formateaza_combinatie(i+1, comb)
+        for i, comb in enumerate(st.session_state.combinatii_generate)
+    ])
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nume_fisier = f"keno_{numar_numere_per_combinatie}numere_{timestamp}.txt"
+    
+    col_exp1, col_exp2 = st.columns([2, 1])
+    
+    with col_exp1:
+        st.download_button(
+            label=f"📥 Descarcă {len(st.session_state.combinatii_generate)} combinații (.txt)",
+            data=continut_fisier,
+            file_name=nume_fisier,
+            mime="text/plain",
+            type="primary",
+            use_container_width=True
+        )
+    
+    with col_exp2:
+        st.info(f"📁 **{nume_fisier}**")
+
+# ============================
+# SECȚIUNEA VERIFICARE
+# ============================
+st.markdown("---")
+st.header("🔍 Verificare Variante")
+
+# Session state pentru cele 3 chenare
+for i in range(1, 4):
+    key = f"runde_chenar_{i}"
+    if key not in st.session_state:
+        st.session_state[key] = []
+
+# Funcții verificare (compatibile cu verify.txt)
+def parse_runde_verificare(text):
+    runde = []
+    for linie in text.splitlines():
+        nums = [int(n) for n in linie.replace(',', ' ').split() if n.strip().isdigit()]
+        if len(nums) >= 3:
+            runde.append(sorted(set(nums)))
+    return runde
+
+def calculeaza_stats(variante, runde, minim_match):
+    """Calculează statistici 3/3 sau 2/3"""
+    total_hits = 0
+    runde_acoperite = 0
+    hits_unice = 0
+    for runda in runde:
+        rset = set(runda)
+        hit_in_runda = False
+        for v in variante:
+            if len(set(v) & rset) >= minim_match:
+                total_hits += 1
+                if not hit_in_runda:
+                    hit_in_runda = True
+        if hit_in_runda:
+            runde_acoperite += 1
+            hits_unice += 1
+    return runde_acoperite, total_hits, hits_unice
+
+def afiseaza_rezultat_chenar(label, variante, runde, chenar_idx):
+    n_runde = len(runde)
+    n_var = len(variante)
+    if n_runde == 0 or n_var == 0:
+        st.info(f"**{label}** — adaugă runde pentru verificare")
+        return
+
+    # 3/3
+    ac33, hits33, unice33 = calculeaza_stats(variante, runde, 3)
+    pct33 = ac33 / n_runde * 100 if n_runde > 0 else 0
+
+    # 2/3
+    ac23, hits23, unice23 = calculeaza_stats(variante, runde, 2)
+    pct23 = ac23 / n_runde * 100 if n_runde > 0 else 0
+
+    # Culoare winrate
+    color33 = "🟢" if pct33 >= 60 else "🟡" if pct33 >= 50 else "🔴"
+
+    st.markdown(f"""
+<div style="background:#1e1e2e;border:1px solid #444;border-radius:8px;padding:12px 16px;margin-bottom:8px;">
+<b style="color:#cdd6f4">{label}</b> &nbsp;|&nbsp; <small style="color:#888">{n_runde} runde · {n_var} variante</small><br><br>
+<span style="color:#a6e3a1"><b>3/3</b></span> &nbsp;
+Acoperite: <b>{ac33}</b> <span style="color:#fab387">({pct33:.1f}%)</span> {color33} &nbsp;|&nbsp;
+Total hits: <b>{hits33}</b> &nbsp;|&nbsp;
+Unice: <b>{unice33}</b><br>
+<span style="color:#89b4fa"><b>2/3</b></span> &nbsp;
+Acoperite: <b>{ac23}</b> <span style="color:#fab387">({pct23:.1f}%)</span> &nbsp;|&nbsp;
+Total hits: <b>{hits23}</b> &nbsp;|&nbsp;
+Unice: <b>{unice23}</b>
+</div>
+""", unsafe_allow_html=True)
+
+# ── INPUT RUNDE CHENARE ──
+st.markdown("#### 📥 Adaugă Runde în Chenare")
+col_ch1, col_ch2, col_ch3 = st.columns(3)
+
+for idx, col in enumerate([col_ch1, col_ch2, col_ch3], 1):
+    key_state = f"runde_chenar_{idx}"
+    with col:
+        st.markdown(f"**Chenar {idx}** — {len(st.session_state[key_state])} runde salvate")
+        text_ch = st.text_area(
+            f"Paste runde chenar {idx}",
+            height=120,
+            key=f"input_chenar_{idx}",
+            placeholder="7,14,22,35,41,53,...\n9,18,27,36,45,54,..."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(f"➕ Adaugă", key=f"add_ch_{idx}", use_container_width=True):
+                noi = parse_runde_verificare(text_ch)
+                if noi:
+                    st.session_state[key_state] += noi
+                    st.rerun()
+        with c2:
+            if st.button(f"🗑️ Șterge", key=f"del_ch_{idx}", use_container_width=True):
+                st.session_state[key_state] = []
+                st.rerun()
+
+st.markdown("---")
+
+# ── BUTON VERIFICĂ ──
+if st.button("🔍 VERIFICĂ VARIANTELE", type="primary", use_container_width=True):
+    if not st.session_state.combinatii_generate:
+        st.warning("⚠️ Generează mai întâi variante!")
+    else:
+        variante_list = st.session_state.combinatii_generate
+        st.markdown("### 📊 Rezultate Verificare")
+        for idx in range(1, 4):
+            runde_ch = st.session_state[f"runde_chenar_{idx}"]
+            afiseaza_rezultat_chenar(
+                f"Chenar {idx}",
+                variante_list,
+                runde_ch,
+                idx
+            )
+
+# Footer
