@@ -18,6 +18,12 @@ if 'combinatii_generate' not in st.session_state:
     st.session_state.combinatii_generate = []
 if 'strategii_selectate' not in st.session_state:
     st.session_state.strategii_selectate = []
+if 'premium_best' not in st.session_state:
+    st.session_state.premium_best = None
+if 'premium_best_score' not in st.session_state:
+    st.session_state.premium_best_score = -1
+if 'premium_log' not in st.session_state:
+    st.session_state.premium_log = ""
 
 # ============================
 # STRATEGII DE GENERARE - OPTIMIZATE PENTRU 4/4
@@ -782,6 +788,112 @@ def formateaza_combinatie(id_combinatie, combinatie):
     return f"{id_combinatie}, {numere_str}"
 
 # ============================
+# FUNCȚII PREMIUM
+# ============================
+
+def filtru_dispersie(combinatii, max_frecventa=12):
+    """Niciun număr să nu apară mai mult de max_frecventa ori"""
+    freq = Counter(n for c in combinatii for n in c)
+    return max(freq.values()) <= max_frecventa if freq else True
+
+def filtru_perechi(combinatii, max_perechi=8):
+    """Nicio pereche să nu apară mai mult de max_perechi ori"""
+    from itertools import combinations as icombo
+    perechi = Counter()
+    for c in combinatii:
+        for p in icombo(sorted(c), 2):
+            perechi[p] += 1
+    return max(perechi.values()) <= max_perechi if perechi else True
+
+def filtru_triplete(combinatii):
+    """Toate tripletele să fie unice"""
+    triplete = [tuple(sorted(c)) for c in combinatii]
+    return len(triplete) == len(set(triplete))
+
+def filtru_distanta(combinatii, max_comune=1):
+    """Două variante nu pot avea mai mult de max_comune numere comune"""
+    for i in range(len(combinatii)):
+        for j in range(i+1, len(combinatii)):
+            comune = len(set(combinatii[i]) & set(combinatii[j]))
+            if comune > max_comune:
+                return False
+    return True
+
+def filtru_zone(combinatii, nr_zone=6, max_per_zona=None):
+    """Acoperire uniformă pe zone 1-66"""
+    zone_size = 66 // nr_zone
+    if max_per_zona is None:
+        max_per_zona = int(len(combinatii) * 3 / nr_zone * 1.4)
+    counts = [0] * nr_zone
+    for c in combinatii:
+        for n in c:
+            z = min((n - 1) // zone_size, nr_zone - 1)
+            counts[z] += 1
+    return max(counts) <= max_per_zona
+
+def entropy_score(combinatii):
+    """Scor entropie - diversitate și uniformitate"""
+    import math
+    freq = Counter(n for c in combinatii for n in c)
+    total = sum(freq.values())
+    if total == 0:
+        return 0
+    entropy = -sum((v/total) * math.log2(v/total) for v in freq.values() if v > 0)
+    max_entropy = math.log2(66)
+    return entropy / max_entropy
+
+def calculeaza_wr_chenar(combinatii, runde, minim_match):
+    """Calculează winrate și hits pentru un chenar"""
+    if not runde:
+        return 0, 0, 0
+    runde_acoperite = 0
+    total_hits = 0
+    for runda in runde:
+        rset = set(runda)
+        hit_runda = False
+        for c in combinatii:
+            if len(set(c) & rset) >= minim_match:
+                total_hits += 1
+                if not hit_runda:
+                    hit_runda = True
+        if hit_runda:
+            runde_acoperite += 1
+    wr = runde_acoperite / len(runde) * 100
+    hits_per_runda = total_hits / len(runde)
+    return wr, total_hits, hits_per_runda
+
+def scor_stabilitate(wr_list, k=0.5):
+    """Score = mean(WR) - k * stddev(WR) — premiază stabilitatea"""
+    import math
+    if not wr_list:
+        return 0
+    mean = sum(wr_list) / len(wr_list)
+    if len(wr_list) < 2:
+        return mean
+    variance = sum((x - mean)**2 for x in wr_list) / len(wr_list)
+    std = math.sqrt(variance)
+    return mean - k * std
+
+def aplica_filtre_premium(combinatii, filtre_active, max_freq, max_perechi, max_comune):
+    """Aplică filtrele selectate și returnează True dacă trece toate"""
+    if "Dispersie numere" in filtre_active:
+        if not filtru_dispersie(combinatii, max_freq):
+            return False
+    if "Perechi repetitive" in filtre_active:
+        if not filtru_perechi(combinatii, max_perechi):
+            return False
+    if "Triplete unice" in filtre_active:
+        if not filtru_triplete(combinatii):
+            return False
+    if "Distanță variante" in filtre_active:
+        if not filtru_distanta(combinatii, max_comune):
+            return False
+    if "Acoperire zone" in filtre_active:
+        if not filtru_zone(combinatii):
+            return False
+    return True
+
+# ============================
 # INTERFAȚĂ STREAMLIT
 # ============================
 
@@ -1126,6 +1238,205 @@ if st.session_state.combinatii_generate:
     
     with col_exp2:
         st.info(f"📁 **{nume_fisier}**")
+
+# ============================
+# SECȚIUNEA PREMIUM - GENERARE AUTOMATĂ
+# ============================
+st.markdown("---")
+st.header("🏆 Generare Premium — Automată")
+st.markdown("*Caută automat cel mai bun grup de variante pe baza criteriilor tale.*")
+
+# Verificare chenare disponibile
+chenare_disponibile = [
+    st.session_state.get(f"runde_chenar_{i}", [])
+    for i in range(1, 4)
+]
+chenare_cu_runde = [c for c in chenare_disponibile if len(c) > 0]
+
+if len(chenare_cu_runde) < 2:
+    st.warning("⚠️ Adaugă runde în cel puțin 2 chenare (secțiunea Verificare de mai jos) înainte să folosești Generarea Premium.")
+else:
+    st.success(f"✅ {len(chenare_cu_runde)} chenare active: {[len(c) for c in chenare_cu_runde]} runde")
+
+    col_prem1, col_prem2 = st.columns([1, 1])
+
+    with col_prem1:
+        st.markdown("#### 🎛️ Criterii Winrate")
+        wr_min = st.slider("3/3 Winrate minim (%)", 55, 72, 62, 1, key="prem_wr_min")
+        wr_max = st.slider("3/3 Winrate maxim (%)", 60, 80, 70, 1, key="prem_wr_max")
+        hits_min = st.slider("2/3 Hits/rundă minim", 8, 15, 11, 1, key="prem_hits_min")
+        hits_max = st.slider("2/3 Hits/rundă maxim", 12, 25, 18, 1, key="prem_hits_max")
+        dev_max = st.slider("Deviație max între chenare (%)", 1, 10, 5, 1, key="prem_dev_max")
+
+    with col_prem2:
+        st.markdown("#### 🔧 Filtre Active")
+        f_dispersie = st.checkbox("📊 Dispersie numere", value=True, key="f_disp")
+        f_perechi = st.checkbox("🔗 Perechi repetitive", value=True, key="f_per")
+        f_triplete = st.checkbox("🎯 Triplete unice", value=True, key="f_trip")
+        f_distanta = st.checkbox("📏 Distanță între variante", value=False, key="f_dist",
+                                  help="Atentie: încetinește căutarea semnificativ")
+        f_zone = st.checkbox("🗺️ Acoperire zone", value=True, key="f_zone")
+
+        st.markdown("#### ⚙️ Parametri Filtre")
+        max_freq = st.number_input("Max apariții per număr", 5, 20, 10, key="prem_maxfreq")
+        max_perechi_val = st.number_input("Max apariții per pereche", 3, 15, 7, key="prem_maxper")
+        max_comune_val = st.number_input("Max numere comune între variante", 1, 3, 2, key="prem_maxcom")
+
+    col_iter1, col_iter2 = st.columns([1, 1])
+    with col_iter1:
+        max_iter = st.number_input("Iterații maxime", 50, 3000, 500, step=50, key="prem_iter")
+    with col_iter2:
+        nr_combinatii_prem = st.number_input("Variante per set", 50, 300, 155, step=5, key="prem_nrcomb")
+
+    filtre_active = []
+    if f_dispersie: filtre_active.append("Dispersie numere")
+    if f_perechi: filtre_active.append("Perechi repetitive")
+    if f_triplete: filtre_active.append("Triplete unice")
+    if f_distanta: filtre_active.append("Distanță variante")
+    if f_zone: filtre_active.append("Acoperire zone")
+
+    # Buton Generare Automată
+    if st.button("🚀 GENERARE AUTOMATĂ PREMIUM", type="primary", use_container_width=True, key="btn_auto"):
+
+        strategii_active = st.session_state.strategii_selectate if st.session_state.strategii_selectate else ["🎯 Random Standard"]
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        best_box = st.empty()
+
+        best_combo = None
+        best_score = -999
+        best_wr_list = []
+        best_hits_list = []
+        gasit = False
+        iter_gasit = 0
+
+        for iteratie in range(1, int(max_iter) + 1):
+            progress_bar.progress(iteratie / max_iter)
+            status_text.markdown(f"🔄 Iterația **{iteratie}/{int(max_iter)}** | Best score: **{best_score:.2f}**")
+
+            # Generează un set nou
+            combinatii_test = genereaza_combinatii(
+                int(nr_combinatii_prem),
+                numar_numere_per_combinatie,
+                st.session_state.numar_min,
+                numar_max,
+                strategii_active,
+                st.session_state.runde_salvate
+            )
+
+            # Aplică filtrele structurale
+            if filtre_active:
+                if not aplica_filtre_premium(combinatii_test, filtre_active, int(max_freq), int(max_perechi_val), int(max_comune_val)):
+                    continue
+
+            # Testează pe chenare
+            wr_list = []
+            hits_list = []
+            valid = True
+
+            for chenar in chenare_cu_runde:
+                wr33, _, _ = calculeaza_wr_chenar(combinatii_test, chenar, 3)
+                _, _, hits23 = calculeaza_wr_chenar(combinatii_test, chenar, 2)
+
+                wr_list.append(wr33)
+                hits_list.append(hits23)
+
+                # Verifică criteriile per chenar
+                if not (wr_min <= wr33 <= wr_max):
+                    valid = False
+                    break
+                if not (hits_min <= hits23 <= hits_max):
+                    valid = False
+                    break
+
+            if not valid:
+                # Calculează scorul oricum pentru best tracking
+                if wr_list:
+                    sc = scor_stabilitate(wr_list)
+                    if sc > best_score:
+                        best_score = sc
+                        best_combo = combinatii_test
+                        best_wr_list = wr_list
+                        best_hits_list = hits_list
+                continue
+
+            # Verifică deviația între chenare
+            import math
+            if len(wr_list) >= 2:
+                mean_wr = sum(wr_list) / len(wr_list)
+                std_wr = math.sqrt(sum((x - mean_wr)**2 for x in wr_list) / len(wr_list))
+                if std_wr > dev_max:
+                    sc = scor_stabilitate(wr_list)
+                    if sc > best_score:
+                        best_score = sc
+                        best_combo = combinatii_test
+                        best_wr_list = wr_list
+                        best_hits_list = hits_list
+                    continue
+
+            # A trecut toate criteriile!
+            sc = scor_stabilitate(wr_list)
+            if sc > best_score:
+                best_score = sc
+                best_combo = combinatii_test
+                best_wr_list = wr_list
+                best_hits_list = hits_list
+                gasit = True
+                iter_gasit = iteratie
+
+            if gasit:
+                break
+
+        # Afișare rezultat final
+        progress_bar.progress(1.0)
+
+        if best_combo:
+            st.session_state.premium_best = best_combo
+            st.session_state.combinatii_generate = best_combo
+
+            if gasit:
+                st.success(f"✅ Găsit la iterația **{iter_gasit}**! Score stabilitate: **{best_score:.2f}**")
+            else:
+                st.warning(f"⚠️ Nu s-a găsit set perfect în {int(max_iter)} iterații. Afișez **cel mai bun găsit** (score: {best_score:.2f})")
+
+            # Afișare stats chenare
+            for ci, (chenar, wr, hits) in enumerate(zip(chenare_cu_runde, best_wr_list, best_hits_list), 1):
+                color = "🟢" if wr_min <= wr <= wr_max else "🟡"
+                st.markdown(f"**Chenar {ci}:** {color} WR 3/3: **{wr:.1f}%** | 2/3 hits/rundă: **{hits:.1f}**")
+
+            # Preview + Download — exact ca generarea normală
+            st.markdown("---")
+            st.subheader(f"📜 Rezultat Premium ({len(best_combo)} variante)")
+
+            toate_prem = '\n'.join([
+                formateaza_combinatie(i+1, c)
+                for i, c in enumerate(best_combo)
+            ])
+
+            with st.expander("📋 Vezi textul pentru copiere"):
+                st.code(toate_prem, language=None)
+
+            st.text_area(
+                "Scroll pentru toate combinațiile:",
+                value=toate_prem,
+                height=300,
+                disabled=True,
+                key="preview_premium"
+            )
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label=f"📥 Descarcă {len(best_combo)} variante Premium (.txt)",
+                data=toate_prem,
+                file_name=f"premium_{len(best_combo)}var_{timestamp}.txt",
+                mime="text/plain",
+                type="primary",
+                use_container_width=True,
+                key="dl_premium"
+            )
+        else:
+            st.error("❌ Nu s-a putut genera niciun set valid. Verifică că ai runde în chenare și relaxează criteriile.")
 
 # ============================
 # SECȚIUNEA VERIFICARE
