@@ -1286,8 +1286,14 @@ else:
     with col_iter1:
         max_iter = st.number_input("Iterații maxime", 50, 3000, 500, step=50, key="prem_iter")
     with col_iter2:
-        nr_combinatii_prem = st.number_input("Variante per set", 5, 20, 30, 50, 300, 155, key="prem_nrcomb")
-
+       nr_combinatii_prem = st.number_input(
+    label="Variante per set", 
+    min_value=5, 
+    max_value=10000, 
+    value=155, 
+    step=5, 
+    key="prem_nrcomb"
+)
     filtre_active = []
     if f_dispersie: filtre_active.append("Dispersie numere")
     if f_perechi: filtre_active.append("Perechi repetitive")
